@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: render-yolo-web
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 2 --timeout 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: YOLO_MODEL
+        value: best.pt
+      - key: YOLO_MODEL_OBJECT
+        value: best.pt
+      - key: YOLO_MODEL_BUCKET
+        value: yolo-models
+      - key: YOLO_CONF
+        value: "0.35"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: SUPABASE_URL
+        value: https://aiumzxboxbbphafebaig.supabase.co
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: detection-images
+      - key: SUPABASE_TABLE
+        value: detection_events
