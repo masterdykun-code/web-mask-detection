@@ -141,28 +141,24 @@ class OnnxDetector:
         if predictions.ndim != 2:
             raise RuntimeError(f"Định dạng output ONNX không được hỗ trợ: {predictions.shape}")
 
-        # YOLO26 end-to-end exports return center-xywh, confidence and class id
-        # as [N, 6]. Standard YOLO exports return center-xywh plus class scores
-        # and need NMS below.
+        # Ultralytics end-to-end exports return [x1, y1, x2, y2, confidence,
+        # class_id]. Non-end-to-end exports return center-xywh plus class scores.
         if self.end2end:
             if predictions.shape[1] != 6:
                 raise RuntimeError(f"Output end-to-end ONNX không đúng định dạng [N, 6]: {predictions.shape}")
-            centers_x, centers_y, widths, heights = predictions[:, :4].T
+            boxes = predictions[:, :4]
             scores = predictions[:, 4]
             class_ids = np.rint(predictions[:, 5]).astype(np.int32)
             valid = (scores >= confidence_threshold) & (class_ids >= 0) & (class_ids < len(self.names))
-            centers_x = centers_x[valid]
-            centers_y = centers_y[valid]
-            widths = widths[valid]
-            heights = heights[valid]
+            boxes = boxes[valid]
             scores = scores[valid]
             class_ids = class_ids[valid]
             if not len(scores):
                 return []
-            x1 = np.clip((centers_x - widths / 2 - pad_left) / scale, 0, frame_width - 1)
-            y1 = np.clip((centers_y - heights / 2 - pad_top) / scale, 0, frame_height - 1)
-            x2 = np.clip((centers_x + widths / 2 - pad_left) / scale, 0, frame_width - 1)
-            y2 = np.clip((centers_y + heights / 2 - pad_top) / scale, 0, frame_height - 1)
+            x1 = np.clip((boxes[:, 0] - pad_left) / scale, 0, frame_width - 1)
+            y1 = np.clip((boxes[:, 1] - pad_top) / scale, 0, frame_height - 1)
+            x2 = np.clip((boxes[:, 2] - pad_left) / scale, 0, frame_width - 1)
+            y2 = np.clip((boxes[:, 3] - pad_top) / scale, 0, frame_height - 1)
             detections = [
                 {
                     "class_name": self.names[int(class_ids[i])],
