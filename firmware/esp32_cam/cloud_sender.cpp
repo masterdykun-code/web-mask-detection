@@ -50,6 +50,13 @@ bool uploadJpegToRender(
     result->responseBody = http.getString();
     const String sequenceHeader = http.header("X-IoT-Sequence");
     if (sequenceHeader.length()) result->sequence = strtoul(sequenceHeader.c_str(), nullptr, 10);
+    if (result->sequence == 0) {
+      const int keyPosition = result->responseBody.indexOf("\"sequence\":");
+      if (keyPosition >= 0) {
+        const char *sequenceStart = result->responseBody.c_str() + keyPosition + 11;
+        result->sequence = strtoul(sequenceStart, nullptr, 10);
+      }
+    }
   }
   result->roundTripMs = millis() - startedAt;
   http.end();
