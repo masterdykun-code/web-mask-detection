@@ -1,45 +1,51 @@
-import os, time, threading, uuid
+import ast
+import json
+import os
+import threading
+import time
+import uuid
 from datetime import datetime, timezone
+from urllib.parse import quote
+
+# Keep numerical libraries from creating extra worker threads on small instances.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 import requests
-from flask import Flask, render_template, request, jsonify
-from ultralytics import YOLO
-
-try:
-    from supabase import create_client
-except ImportError:
-    create_client = None
+from flask import Flask, jsonify, render_template, request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv(os.path.join(BASE_DIR, ".env"))
 except ImportError:
     pass
 
 app = Flask(__name__)
-MODEL_CACHE_DIR = os.path.join(BASE_DIR, "runtime_models")
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_FRAME_BYTES", str(2 * 1024 * 1024)))
+
 CONF = float(os.getenv("YOLO_CONF", "0.40"))
 IMGSZ = int(os.getenv("YOLO_IMGSZ", "320"))
 DEVICE_ID = os.getenv("DEVICE_ID", "WEBCAM-01")
+ORT_NUM_THREADS = max(1, int(os.getenv("ORT_NUM_THREADS", "1")))
 
-# Secrets đọc từ file .env duy nhất (local) hoặc Environment Variables (Render).
-# Không commit .env lên GitHub. Biến môi trường hệ thống luôn ưu tiên hơn .env.
+# Secrets are read from .env locally or from Render environment variables.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 ALERT_COOLDOWN = int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "20"))
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aiumzxboxbbphafebaig.supabase.co").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aiumzxboxbbphafebaig.supabase.co").strip().rstrip("/")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip()
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "detection-images").strip()
-YOLO_MODEL_BUCKET = os.getenv("YOLO_MODEL_BUCKET", "yolo-models").strip()
-YOLO_MODEL_OBJECT = os.getenv("YOLO_MODEL_OBJECT", "best.pt").strip()
+YOLO_MODEL_FILE = os.getenv("YOLO_MODEL_FILE", "best.onnx").strip()
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "detection_events").strip()
+YOLO_CLASS_NAMES = [name.strip() for name in os.getenv("YOLO_CLASS_NAMES", "").split(",") if name.strip()]
 
-# For this PPE model, send alerts only for these classes. Normal "Deo" is logged
-# only when an alert event is generated; adjust ALERT_CLASSES if you want all classes.
 ALERT_CLASSES = {"khong deo", "deo sai cach"}
 last_alert_at = 0.0
 alert_lock = threading.Lock()
@@ -47,13 +53,169 @@ model = None
 model_error = None
 model_path = None
 supabase = None
-supabase_storage = None
 supabase_error = None
+
+
+class OnnxDetector:
+    """Small CPU-only detector for Ultralytics detection ONNX exports."""
+
+    def __init__(self, path):
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = ORT_NUM_THREADS
+        options.inter_op_num_threads = 1
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
+        self.session = ort.InferenceSession(
+            path,
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+        model_input = self.session.get_inputs()[0]
+        self.input_name = model_input.name
+        shape = model_input.shape
+        self.input_height = shape[2] if isinstance(shape[2], int) else IMGSZ
+        self.input_width = shape[3] if isinstance(shape[3], int) else IMGSZ
+        metadata = self.session.get_modelmeta().custom_metadata_map
+        self.end2end = metadata.get("end2end", "").lower() == "true"
+        self.names = self._read_names()
+        if not self.names:
+            raise RuntimeError(
+                "ONNX không có metadata tên class; hãy export lại bằng Ultralytics "
+                "hoặc đặt YOLO_CLASS_NAMES, ví dụ: Khong deo,Deo sai cach,Deo."
+            )
+
+    def _read_names(self):
+        raw = self.session.get_modelmeta().custom_metadata_map.get("names")
+        names = None
+        if raw:
+            try:
+                names = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                try:
+                    names = ast.literal_eval(raw)
+                except (ValueError, SyntaxError):
+                    names = None
+        if isinstance(names, dict):
+            try:
+                return {int(key): str(value) for key, value in names.items()}
+            except (TypeError, ValueError):
+                return None
+        if isinstance(names, (list, tuple)):
+            return {index: str(value) for index, value in enumerate(names)}
+        if YOLO_CLASS_NAMES:
+            return {index: name for index, name in enumerate(YOLO_CLASS_NAMES)}
+        return None
+
+    def predict(self, frame, confidence_threshold):
+        frame_height, frame_width = frame.shape[:2]
+        input_width, input_height = int(self.input_width), int(self.input_height)
+        scale = min(input_width / frame_width, input_height / frame_height)
+        resized_width = max(1, int(round(frame_width * scale)))
+        resized_height = max(1, int(round(frame_height * scale)))
+        resized = cv2.resize(frame, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+        pad_left = (input_width - resized_width) // 2
+        pad_top = (input_height - resized_height) // 2
+        padded = np.full((input_height, input_width, 3), 114, dtype=np.uint8)
+        padded[pad_top:pad_top + resized_height, pad_left:pad_left + resized_width] = resized
+        tensor = padded[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+
+        output = self.session.run(None, {self.input_name: tensor})[0]
+        predictions = np.asarray(output)
+        while predictions.ndim > 2 and predictions.shape[0] == 1:
+            predictions = predictions[0]
+        if predictions.ndim != 2:
+            raise RuntimeError(f"Định dạng output ONNX không được hỗ trợ: {predictions.shape}")
+
+        # YOLO26 end-to-end exports return center-xywh, confidence and class id
+        # as [N, 6]. Standard YOLO exports return center-xywh plus class scores
+        # and need NMS below.
+        if self.end2end:
+            if predictions.shape[1] != 6:
+                raise RuntimeError(f"Output end-to-end ONNX không đúng định dạng [N, 6]: {predictions.shape}")
+            centers_x, centers_y, widths, heights = predictions[:, :4].T
+            scores = predictions[:, 4]
+            class_ids = np.rint(predictions[:, 5]).astype(np.int32)
+            valid = (scores >= confidence_threshold) & (class_ids >= 0) & (class_ids < len(self.names))
+            centers_x = centers_x[valid]
+            centers_y = centers_y[valid]
+            widths = widths[valid]
+            heights = heights[valid]
+            scores = scores[valid]
+            class_ids = class_ids[valid]
+            if not len(scores):
+                return []
+            x1 = np.clip((centers_x - widths / 2 - pad_left) / scale, 0, frame_width - 1)
+            y1 = np.clip((centers_y - heights / 2 - pad_top) / scale, 0, frame_height - 1)
+            x2 = np.clip((centers_x + widths / 2 - pad_left) / scale, 0, frame_width - 1)
+            y2 = np.clip((centers_y + heights / 2 - pad_top) / scale, 0, frame_height - 1)
+            detections = [
+                {
+                    "class_name": self.names[int(class_ids[i])],
+                    "confidence": round(float(scores[i]), 4),
+                    "bbox": [round(float(x1[i]), 1), round(float(y1[i]), 1), round(float(x2[i]), 1), round(float(y2[i]), 1)],
+                }
+                for i in range(len(scores))
+            ]
+            return sorted(detections, key=lambda detection: detection["confidence"], reverse=True)
+
+        class_count = len(self.names)
+        if predictions.shape[0] in (4 + class_count, 5 + class_count):
+            predictions = predictions.T
+        feature_count = predictions.shape[1]
+        if feature_count not in (4 + class_count, 5 + class_count):
+            raise RuntimeError(
+                f"Output ONNX có {feature_count} giá trị mỗi box, không khớp {class_count} class. "
+                "Hãy export model detection với nms=False."
+            )
+
+        boxes = predictions[:, :4]
+        if feature_count == 4 + class_count:
+            class_scores = predictions[:, 4:]
+        else:
+            class_scores = predictions[:, 5:] * predictions[:, 4:5]
+        class_ids = np.argmax(class_scores, axis=1)
+        scores = class_scores[np.arange(len(class_scores)), class_ids]
+        valid = scores >= confidence_threshold
+        if not np.any(valid):
+            return []
+
+        boxes = boxes[valid]
+        class_ids = class_ids[valid]
+        scores = scores[valid]
+        centers_x, centers_y, widths, heights = boxes.T
+        x1 = (centers_x - widths / 2 - pad_left) / scale
+        y1 = (centers_y - heights / 2 - pad_top) / scale
+        x2 = (centers_x + widths / 2 - pad_left) / scale
+        y2 = (centers_y + heights / 2 - pad_top) / scale
+        x1 = np.clip(x1, 0, frame_width - 1)
+        y1 = np.clip(y1, 0, frame_height - 1)
+        x2 = np.clip(x2, 0, frame_width - 1)
+        y2 = np.clip(y2, 0, frame_height - 1)
+
+        detections = []
+        for class_id in np.unique(class_ids):
+            indexes = np.flatnonzero(class_ids == class_id)
+            rects = [
+                [int(x1[i]), int(y1[i]), max(1, int(x2[i] - x1[i])), max(1, int(y2[i] - y1[i]))]
+                for i in indexes
+            ]
+            kept = cv2.dnn.NMSBoxes(rects, scores[indexes].astype(float).tolist(), confidence_threshold, 0.45)
+            if len(kept) == 0:
+                continue
+            for local_index in np.asarray(kept).reshape(-1):
+                i = indexes[int(local_index)]
+                detections.append({
+                    "class_name": self.names.get(int(class_ids[i]), str(int(class_ids[i]))),
+                    "confidence": round(float(scores[i]), 4),
+                    "bbox": [round(float(x1[i]), 1), round(float(y1[i]), 1), round(float(x2[i]), 1), round(float(y2[i]), 1)],
+                })
+        return sorted(detections, key=lambda detection: detection["confidence"], reverse=True)
 
 
 @app.errorhandler(413)
 def request_too_large(error):
-    return jsonify({"error": "Request quá lớn"}), 413
+    return jsonify({"error": "Frame quá lớn; giới hạn hiện tại là 2 MB."}), 413
 
 
 @app.errorhandler(500)
@@ -61,47 +223,60 @@ def internal_server_error(error):
     return jsonify({"error": "Lỗi server khi xử lý frame"}), 500
 
 
-def norm(s):
-    return str(s).strip().lower().replace("đ", "d")
+def norm(value):
+    return str(value).strip().lower().replace("đ", "d")
+
+
+def supabase_headers(extra=None):
+    headers = {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def storage_object_url(bucket, object_path):
+    return (
+        f"{SUPABASE_URL}/storage/v1/object/"
+        f"{quote(bucket, safe='')}/{quote(object_path, safe='/')}"
+    )
 
 
 def init_model():
     global model, model_error, model_path
-    if supabase_storage is None:
-        model_error = "Không thể tải model từ Supabase: thiếu cấu hình Supabase."
-        print("[MODEL]", model_error)
-        return
     try:
-        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        source_path = os.path.join(MODEL_CACHE_DIR, os.path.basename(YOLO_MODEL_OBJECT))
-        model_bytes = supabase_storage.storage.from_(YOLO_MODEL_BUCKET).download(YOLO_MODEL_OBJECT)
-        with open(source_path, "wb") as model_file:
-            model_file.write(model_bytes)
-        print("[MODEL] Đã tải từ Supabase:", YOLO_MODEL_BUCKET, YOLO_MODEL_OBJECT)
-        model = YOLO(source_path)
+        source_path = YOLO_MODEL_FILE if os.path.isabs(YOLO_MODEL_FILE) else os.path.join(BASE_DIR, YOLO_MODEL_FILE)
+        if not os.path.isfile(source_path):
+            raise FileNotFoundError(f"Không tìm thấy model ONNX: {source_path}")
+        loaded_model = OnnxDetector(source_path)
+        model = loaded_model
         model_path = source_path
-        print("[MODEL] Đã tải model:", source_path, "classes:", model.names)
-    except Exception as e:
-        model_error = str(e)
-        print("[MODEL] Lỗi tải model:", e)
+        model_error = None
+        print("[MODEL] Đã nạp ONNX từ repository:", source_path, "classes:", model.names)
+    except Exception as error:
+        model = None
+        model_error = str(error)
+        print("[MODEL] Lỗi tải model:", error)
 
 
 def init_services():
-    global supabase, supabase_storage, supabase_error
-    if create_client is None:
-        supabase_error = "Chưa cài supabase package"
-    elif SUPABASE_URL and SUPABASE_SECRET_KEY:
-        try:
-            supabase_storage = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
-            supabase = supabase_storage
-            supabase.table(SUPABASE_TABLE).select("id").limit(1).execute()
-            print("[Supabase] Kết nối OK")
-        except Exception as e:
-            supabase = None
-            supabase_error = str(e)
-            print("[Supabase] Lỗi kết nối:", e)
-    else:
+    global supabase, supabase_error
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
         supabase_error = "Thiếu SUPABASE_URL hoặc SUPABASE_SECRET_KEY"
+    else:
+        try:
+            url = f"{SUPABASE_URL}/rest/v1/{quote(SUPABASE_TABLE, safe='')}?select=id&limit=1"
+            response = requests.get(url, headers=supabase_headers(), timeout=(5, 15))
+            response.raise_for_status()
+            supabase = True
+            supabase_error = None
+            print("[Supabase] Kết nối OK")
+        except Exception as error:
+            supabase = None
+            supabase_error = str(error)
+            print("[Supabase] Lỗi kết nối:", error)
     init_model()
 
 
@@ -112,26 +287,29 @@ def send_telegram(image_bytes, caption):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         files = {"photo": ("detection.jpg", image_bytes, "image/jpeg")}
         data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption[:1024]}
-        resp = requests.post(url, data=data, files=files, timeout=20)
-        resp.raise_for_status()
-        body = resp.json()
+        response = requests.post(url, data=data, files=files, timeout=20)
+        response.raise_for_status()
+        body = response.json()
         if not body.get("ok"):
             raise RuntimeError(str(body))
         return True, "OK"
-    except Exception as e:
-        print("[Telegram] Gửi lỗi:", e)
-        return False, str(e)
+    except Exception as error:
+        print("[Telegram] Gửi lỗi:", error)
+        return False, str(error)
 
 
 def save_supabase(image_bytes, class_name, confidence, telegram_sent):
-    if supabase is None:
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
         return False, None, supabase_error or "Supabase chưa sẵn sàng"
     object_path = f"{datetime.now(timezone.utc):%Y/%m/%d}/{uuid.uuid4().hex}.jpg"
     try:
-        supabase.storage.from_(SUPABASE_BUCKET).upload(
-            object_path, image_bytes,
-            {"content-type": "image/jpeg", "upsert": "false"}
+        upload_response = requests.post(
+            storage_object_url(SUPABASE_BUCKET, object_path),
+            headers=supabase_headers({"Content-Type": "image/jpeg", "x-upsert": "false"}),
+            data=image_bytes,
+            timeout=(10, 30),
         )
+        upload_response.raise_for_status()
         row = {
             "device_id": DEVICE_ID,
             "class_name": class_name,
@@ -139,11 +317,32 @@ def save_supabase(image_bytes, class_name, confidence, telegram_sent):
             "image_path": object_path,
             "telegram_sent": bool(telegram_sent),
         }
-        supabase.table(SUPABASE_TABLE).insert(row).execute()
+        table_url = f"{SUPABASE_URL}/rest/v1/{quote(SUPABASE_TABLE, safe='')}"
+        insert_response = requests.post(
+            table_url,
+            headers=supabase_headers({"Content-Type": "application/json", "Prefer": "return=minimal"}),
+            json=row,
+            timeout=(10, 30),
+        )
+        insert_response.raise_for_status()
         return True, object_path, "OK"
-    except Exception as e:
-        print("[Supabase] Lưu lỗi:", e)
-        return False, object_path, str(e)
+    except Exception as error:
+        print("[Supabase] Lưu lỗi:", error)
+        return False, object_path, str(error)
+
+
+def draw_detections(frame, detections):
+    annotated = frame.copy()
+    for detection in detections:
+        x1, y1, x2, y2 = [int(value) for value in detection["bbox"]]
+        color = (113, 113, 251) if norm(detection["class_name"]) in ALERT_CLASSES else (74, 222, 128)
+        label = f"{detection['class_name']} {detection['confidence'] * 100:.1f}%"
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        (text_width, text_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        label_top = max(text_height + baseline, y1)
+        cv2.rectangle(annotated, (x1, label_top - text_height - baseline), (x1 + text_width + 8, label_top), color, -1)
+        cv2.putText(annotated, label, (x1 + 4, label_top - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (7, 17, 31), 2)
+    return annotated
 
 
 @app.get("/")
@@ -171,34 +370,26 @@ def detect():
     active_model = model
     active_model_error = model_error
     if active_model is None:
-        return jsonify({"error": active_model_error or "Model chưa tải được. Kiểm tra best.pt và log Render."}), 503
+        return jsonify({"error": active_model_error or "Model chưa tải được. Kiểm tra best.onnx và log Render."}), 503
     if "frame" not in request.files:
         return jsonify({"error": "Thiếu frame ảnh"}), 400
     raw = request.files["frame"].read()
     if not raw:
         return jsonify({"error": "Ảnh rỗng"}), 400
-    arr = np.frombuffer(raw, dtype=np.uint8)
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return jsonify({"error": "Không đọc được ảnh webcam"}), 400
 
     start = time.perf_counter()
     try:
-        result = active_model.predict(frame, conf=CONF, imgsz=IMGSZ, verbose=False)[0]
+        detections = active_model.predict(frame, CONF)
         inference_ms = (time.perf_counter() - start) * 1000
-        detections = []
-        for box in result.boxes:
-            cls_id = int(box.cls[0].item())
-            class_name = active_model.names.get(cls_id, str(cls_id)) if isinstance(active_model.names, dict) else active_model.names[cls_id]
-            confidence = float(box.conf[0].item())
-            xyxy = [round(float(v), 1) for v in box.xyxy[0].tolist()]
-            detections.append({"class_name": str(class_name), "confidence": round(confidence, 4), "bbox": xyxy})
-        # Only render and encode an image when an alert is ready to be sent.
-        alert = next((d for d in detections if norm(d["class_name"]) in ALERT_CLASSES), None)
+        alert = next((item for item in detections if norm(item["class_name"]) in ALERT_CLASSES), None)
         telegram_sent = False
         stored = False
         image_path = None
         action_message = ""
+
         if alert:
             now = time.time()
             with alert_lock:
@@ -206,18 +397,25 @@ def detect():
                 if allowed:
                     last_alert_at = now
             if allowed:
-                annotated = result.plot()
-                ok, enc = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+                annotated = draw_detections(frame, detections)
+                ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
                 if not ok:
                     return jsonify({"error": "Không mã hóa được ảnh cảnh báo"}), 500
-                out_bytes = enc.tobytes()
-                caption = (f"⚠️ CẢNH BÁO NHẬN DIỆN\nThiết bị: {DEVICE_ID}\n"
-                           f"Class: {alert['class_name']}\nĐộ tin cậy: {alert['confidence']*100:.1f}%\n"
-                           f"Thời gian: {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M:%S')}")
-                telegram_sent, tg_msg = send_telegram(out_bytes, caption)
-                stored, image_path, db_msg = save_supabase(out_bytes, alert["class_name"], alert["confidence"], telegram_sent)
-                action_message = f"Cảnh báo: Telegram {'đã gửi' if telegram_sent else 'chưa gửi'}; Supabase {'đã lưu' if stored else 'chưa lưu'}"
-                print("[EVENT]", action_message, "Telegram:", tg_msg, "Supabase:", db_msg)
+                image_bytes = encoded.tobytes()
+                caption = (
+                    f"⚠️ CẢNH BÁO NHẬN DIỆN\nThiết bị: {DEVICE_ID}\n"
+                    f"Class: {alert['class_name']}\nĐộ tin cậy: {alert['confidence'] * 100:.1f}%\n"
+                    f"Thời gian: {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M:%S')}"
+                )
+                telegram_sent, telegram_message = send_telegram(image_bytes, caption)
+                stored, image_path, database_message = save_supabase(
+                    image_bytes, alert["class_name"], alert["confidence"], telegram_sent
+                )
+                action_message = (
+                    f"Cảnh báo: Telegram {'đã gửi' if telegram_sent else 'chưa gửi'}; "
+                    f"Supabase {'đã lưu' if stored else 'chưa lưu'}"
+                )
+                print("[EVENT]", action_message, "Telegram:", telegram_message, "Supabase:", database_message)
             else:
                 action_message = "Đang trong thời gian chờ trước khi gửi cảnh báo tiếp theo"
 
@@ -231,12 +429,12 @@ def detect():
             "image_path": image_path,
             "message": action_message,
         })
-    except Exception as e:
-        print("[DETECT] Lỗi:", e)
-        return jsonify({"error": str(e)}), 500
+    except Exception as error:
+        print("[DETECT] Lỗi:", error)
+        return jsonify({"error": str(error)}), 500
 
 
 init_services()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=False, threaded=False)

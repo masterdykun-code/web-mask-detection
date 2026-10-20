@@ -1,52 +1,59 @@
-# YOLO webcam + Telegram + Supabase (Render)
+# YOLO webcam + Telegram + Supabase (Render Free)
 
-## Tính năng
+Ứng dụng nhận frame webcam từ trình duyệt, chạy model YOLO detection trên server, hiển thị bounding box và gửi cảnh báo qua Telegram. Ảnh cảnh báo cùng metadata được lưu vào Supabase.
 
-- Webcam trình duyệt gửi frame lên Flask để suy luận bằng model YOLO đang được chọn.
-- Model luôn được tải từ file `best.pt` trong bucket Supabase private khi server khởi động.
-- Trả ảnh có bounding box về website, kèm class/confidence và latency.
-- Khi phát hiện `Khong deo` hoặc `Deo sai cach`, gửi ảnh cảnh báo lên Telegram và upload ảnh đã vẽ bbox lên bucket Supabase `detection-images`, sau đó ghi metadata vào bảng `detection_events`.
-- Mỗi class có cooldown, mặc định 60 giây để hạn chế spam.
+## Chạy trên Render Free
+
+Render Free có 512 MB RAM và 0,1 CPU cho mỗi web service. Để giảm RAM, bản deploy này dùng ONNX Runtime và gọi Supabase REST API trực tiếp; không nạp PyTorch/Ultralytics hoặc Supabase SDK vào process chạy web.
+
+1. Xuất file model `best.pt` thành ONNX trên máy có đủ RAM và đã cài Ultralytics:
+
+   ```bash
+   pip install ultralytics
+   yolo export model=best.pt format=onnx imgsz=320 dynamic=False simplify=False
+   ```
+
+   Lệnh tạo `best.onnx` cạnh file `best.pt`. Giữ metadata tên class khi export; không bật `nms=True`. Model ONNX này đã được đặt trong repository.
+
+2. Tạo Blueprint từ `render.yaml`. Thêm các secret `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` và `SUPABASE_SECRET_KEY` trong Render Environment.
+3. Mở `/api/health` sau deploy. `model_loaded` phải là `true`; nếu không, xem `model_error` và log deploy.
+
+Web service Free có thể sleep sau 15 phút không có request; lần gọi đầu sau đó cần thời gian khởi động lại. Giới hạn và hành vi hiện tại được mô tả trong [Render Free docs](https://render.com/docs/free) và [Render compute plans](https://render.com/docs/compute-plans).
 
 ## Chạy local
 
-1. Đặt `best.pt` cạnh `app.py`.
-2. Python 3.11 khuyến nghị (YOLO/PyTorch trên Render tương thích tốt hơn Python 3.13).
-3. `python -m venv .venv` rồi kích hoạt môi trường.
-4. `pip install -r requirements.txt`
-5. Thiết lập biến môi trường như danh sách dưới, sau đó `python app.py`.
-6. Mở `http://127.0.0.1:5000`.
+1. Tạo môi trường Python 3.11 và cài dependencies:
+
+   ```bash
+   python -m venv .venv
+   pip install -r requirements.txt
+   ```
+
+2. Đặt `best.onnx` cạnh `app.py`, rồi thiết lập các biến môi trường bên dưới hoặc trong `.env` cạnh `app.py`.
+3. Chạy `python app.py` và mở `http://127.0.0.1:5000`.
 
 ## Environment variables
 
-- `TELEGRAM_BOT_TOKEN`: token bot từ BotFather (server-side secret).
-- `TELEGRAM_CHAT_ID`: chat ID người nhận. Mở bot, nhấn `/start` trước.
-- `SUPABASE_URL`: `https://aiumzxboxbbphafebaig.supabase.co`
-- `SUPABASE_SECRET_KEY`: secret key của Supabase, chỉ lưu ở server/Render Environment. Không commit lên GitHub, không đặt trong JavaScript.
-- `SUPABASE_BUCKET`: `detection-images` (bucket private).
-- `SUPABASE_TABLE`: `detection_events`.
-- `YOLO_MODEL_BUCKET`: bucket Supabase private chứa model, mặc định `yolo-models`.
-- `YOLO_MODEL_OBJECT`: đường dẫn file model trong bucket model, mặc định `best.pt`.
-- `TELEGRAM_COOLDOWN_SECONDS`: thời gian tối thiểu giữa hai lần gửi cảnh báo, mặc định `20` giây.
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: thông tin bot và chat nhận cảnh báo.
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY`: thông tin Supabase; secret key chỉ đặt ở server.
+- `SUPABASE_BUCKET`: bucket ảnh cảnh báo, mặc định `detection-images`.
+- `SUPABASE_TABLE`: bảng event, mặc định `detection_events`.
+- `YOLO_MODEL_FILE`: đường dẫn tới file ONNX trong repository, mặc định `best.onnx`.
+- `YOLO_CLASS_NAMES`: danh sách class phân cách bằng dấu phẩy, chỉ cần đặt nếu ONNX không có metadata tên class. Thứ tự phải khớp với model; hai class cảnh báo mặc định là `Khong deo` và `Deo sai cach`.
 - `YOLO_CONF`: ngưỡng confidence, mặc định `0.40`.
-- `YOLO_IMGSZ`: kích thước ảnh inference, mặc định `320` để giảm RAM trên Render Free.
-- `MAX_MODEL_UPLOAD_MB`: kích thước file `.pt` upload tối đa, mặc định `200` MB.
+- `YOLO_IMGSZ`: kích thước dự phòng nếu ONNX có input động, mặc định `320`.
+- `ORT_NUM_THREADS`: số thread inference, mặc định `1`.
+- `TELEGRAM_COOLDOWN_SECONDS`: khoảng chờ toàn hệ thống giữa các cảnh báo, mặc định `20` giây.
+- `DEVICE_ID`: tên thiết bị trong event, mặc định `WEBCAM-01`.
+- `MAX_FRAME_BYTES`: giới hạn kích thước request, mặc định `2097152` byte.
 
-## Deploy Render
+## Supabase schema
 
-1. Upload `best.pt` vào bucket private `yolo-models`. Trên Render, cấu hình `YOLO_MODEL_BUCKET=yolo-models` và `YOLO_MODEL_OBJECT=best.pt` để app tải model từ Supabase lúc khởi động. Bucket `SUPABASE_BUCKET=detection-images` vẫn dùng cho ảnh cảnh báo.
-2. Push project lên GitHub.
-3. Render > New > Blueprint và chọn repository để đọc `render.yaml`, hoặc tạo Web Service thủ công.
-4. Trong Environment, nhập `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SUPABASE_SECRET_KEY`. Không cần thêm dấu ngoặc kép.
-5. Dùng Build Command `pip install -r requirements.txt`; Start Command `gunicorn app:app --workers 1 --threads 2 --timeout 180`.
-6. Render cần đủ RAM để tải PyTorch/YOLO; gói Free có thể thiếu RAM hoặc bị sleep. Kiểm tra chi phí instance trước khi chọn.
+Bảng `public.detection_events` cần các cột `device_id` (text), `class_name` (text), `confidence` (real), `image_path` (text), `telegram_sent` (boolean). Các cột `id`, `detected_at`, `created_at` có thể dùng giá trị mặc định. Tạo bucket `detection-images`; server dùng `SUPABASE_SECRET_KEY` để upload ảnh và ghi event.
 
-## Supabase schema yêu cầu
+## Luồng hoạt động
 
-Bảng `public.detection_events` cần các cột `device_id` (text), `class_name` (text), `confidence` (real), `image_path` (text), `telegram_sent` (boolean); các cột `id`, `detected_at`, `created_at` có thể tự sinh default như đã tạo. Bucket `detection-images` cần tồn tại. Dùng secret key server-side để upload bucket private và insert dữ liệu; không dùng publishable key cho các thao tác này.
-
-## Lưu ý
-
-- Mặc định chỉ gửi Telegram và ghi event vào Supabase với class `Khong deo` / `Deo sai cach`; class bình thường `Deo` không gửi cảnh báo. Mỗi cảnh báo chỉ được gửi tối đa một lần trong 20 giây trên toàn hệ thống.
-- Bucket private: `image_path` lưu đường dẫn object, không phải URL public.
-- Cấu hình Telegram bằng cách gửi `/start` cho bot và lấy đúng chat ID người dùng/group, không dùng bot ID.
+- Trình duyệt gửi JPEG tối đa 960 px mỗi 1,2 giây; server chỉ xử lý tuần tự.
+- Server nạp model ONNX từ repository theo từng lần khởi động và chỉ giữ một ONNX Runtime session; không cần tải model từ Supabase.
+- Chỉ class `Khong deo` và `Deo sai cach` tạo event Telegram/Supabase; các class khác vẫn hiện trên giao diện.
+- Model được đóng gói cùng repository, nên Render Free không cần persistent disk hoặc bucket model riêng.
