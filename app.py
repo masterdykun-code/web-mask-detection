@@ -19,6 +19,7 @@ import requests
 from flask import Flask, jsonify, render_template, request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_CACHE_DIR = os.path.join(BASE_DIR, "runtime_models")
 
 try:
     from dotenv import load_dotenv
@@ -42,7 +43,8 @@ ALERT_COOLDOWN = int(os.getenv("TELEGRAM_COOLDOWN_SECONDS", "20"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://aiumzxboxbbphafebaig.supabase.co").strip().rstrip("/")
 SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip()
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "detection-images").strip()
-YOLO_MODEL_FILE = os.getenv("YOLO_MODEL_FILE", "best.onnx").strip()
+YOLO_MODEL_BUCKET = os.getenv("YOLO_MODEL_BUCKET", "yolo-models").strip()
+YOLO_MODEL_OBJECT = os.getenv("YOLO_MODEL_OBJECT", "best.onnx").strip()
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "detection_events").strip()
 YOLO_CLASS_NAMES = [name.strip() for name in os.getenv("YOLO_CLASS_NAMES", "").split(",") if name.strip()]
 
@@ -246,15 +248,51 @@ def storage_object_url(bucket, object_path):
 
 def init_model():
     global model, model_error, model_path
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        model_error = "Thiếu SUPABASE_URL hoặc SUPABASE_SECRET_KEY để tải model."
+        print("[MODEL]", model_error)
+        return
+    if not YOLO_MODEL_OBJECT.lower().endswith(".onnx"):
+        model_error = "YOLO_MODEL_OBJECT phải trỏ tới file ONNX, ví dụ best.onnx."
+        print("[MODEL]", model_error)
+        return
+
     try:
-        source_path = YOLO_MODEL_FILE if os.path.isabs(YOLO_MODEL_FILE) else os.path.join(BASE_DIR, YOLO_MODEL_FILE)
-        if not os.path.isfile(source_path):
-            raise FileNotFoundError(f"Không tìm thấy model ONNX: {source_path}")
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+        source_path = os.path.join(MODEL_CACHE_DIR, os.path.basename(YOLO_MODEL_OBJECT))
+        download_path = source_path + ".download"
+        url = storage_object_url(YOLO_MODEL_BUCKET, YOLO_MODEL_OBJECT)
+        downloaded = 0
+        try:
+            with requests.get(
+                url,
+                headers=supabase_headers(),
+                stream=True,
+                timeout=(10, 120),
+            ) as response:
+                response.raise_for_status()
+                with open(download_path, "wb") as model_file:
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if chunk:
+                            model_file.write(chunk)
+                            downloaded += len(chunk)
+            if downloaded == 0:
+                raise RuntimeError("File ONNX tải về từ Supabase bị rỗng.")
+            os.replace(download_path, source_path)
+        finally:
+            if os.path.exists(download_path):
+                os.remove(download_path)
+
         loaded_model = OnnxDetector(source_path)
         model = loaded_model
         model_path = source_path
         model_error = None
-        print("[MODEL] Đã nạp ONNX từ repository:", source_path, "classes:", model.names)
+        print(
+            "[MODEL] Đã tải ONNX từ Supabase:",
+            f"{YOLO_MODEL_BUCKET}/{YOLO_MODEL_OBJECT}",
+            "classes:",
+            model.names,
+        )
     except Exception as error:
         model = None
         model_error = str(error)
