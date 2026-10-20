@@ -2,248 +2,495 @@
 <html lang="vi">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>YOLO Webcam · Telegram · Supabase</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#080d18" />
+    <title>Nhận diện khẩu trang</title>
     <style>
       :root {
         color-scheme: dark;
+        --bg: #080d18;
+        --panel: rgba(17, 25, 42, 0.92);
+        --line: rgba(148, 163, 184, 0.14);
+        --text: #edf3ff;
+        --muted: #8795ad;
+        --blue: #6c8cff;
+        --green: #54e0b3;
+        --red: #ff718b;
       }
-      * {
-        box-sizing: border-box;
-      }
+      * { box-sizing: border-box; }
       body {
-        margin: 0;
-        background: #0b1220;
-        color: #e5edf8;
-        font:
-          15px system-ui,
-          Arial;
+        min-height: 100vh; margin: 0; color: var(--text);
+        background: radial-gradient(900px 520px at 10% -10%, rgba(69, 103, 202, .2), transparent 65%),
+          radial-gradient(700px 480px at 100% 0%, rgba(43, 186, 157, .09), transparent 62%), var(--bg);
+        font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
-      .wrap {
-        max-width: 1180px;
-        margin: auto;
-        padding: 22px;
+      button, select { font: inherit; }
+      .shell { width: min(1240px, 100%); margin: 0 auto; padding: 30px 26px 40px; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+      .brand { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 720; letter-spacing: -.03em; }
+      .brand-mark {
+        display: grid; width: 36px; height: 36px; place-items: center; border: 1px solid rgba(108, 140, 255, .38);
+        border-radius: 12px; background: linear-gradient(145deg, rgba(108, 140, 255, .24), rgba(84, 224, 179, .08));
       }
-      .top {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        align-items: center;
-        flex-wrap: wrap;
-      }
-      h1 {
-        font-size: clamp(23px, 4vw, 34px);
-        margin: 0;
-      }
-      .muted {
-        color: #94a3b8;
-      }
+      .brand-mark::before { width: 12px; height: 12px; border: 2px solid #91a8ff; border-radius: 4px; content: ""; transform: rotate(45deg); }
+      .brand-accent { color: #9aafff; }
       .status {
-        padding: 8px 12px;
-        border-radius: 20px;
-        background: #1e293b;
-        font-size: 13px;
+        display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line);
+        border-radius: 999px; background: rgba(16, 26, 43, .75); color: #bac6d9; font-size: 12px; font-weight: 600;
       }
-      .grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
-        gap: 18px;
-        margin-top: 20px;
+      .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #8190a8; }
+      .status.is-ready .status-dot { background: var(--green); box-shadow: 0 0 12px rgba(84, 224, 179, .65); }
+      .status.is-error .status-dot { background: var(--red); box-shadow: 0 0 12px rgba(255, 113, 139, .5); }
+      .layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .8fr); gap: 18px; align-items: start; }
+      .card {
+        min-width: 0; padding: 21px; border: 1px solid var(--line); border-radius: 20px;
+        background: linear-gradient(155deg, rgba(20, 30, 49, .96), var(--panel)); box-shadow: 0 18px 55px rgba(0, 0, 0, .2);
       }
-      .panel {
-        background: #111c2e;
-        border: 1px solid #26364d;
-        border-radius: 18px;
-        padding: 16px;
-        min-width: 0;
+      .section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 17px; }
+      .eyebrow { margin: 0 0 3px; color: #8292ad; font-size: 10px; font-weight: 750; letter-spacing: .14em; }
+      h1, h2, h3, p { margin-top: 0; }
+      h1, h2 { margin-bottom: 0; font-size: 20px; line-height: 1.25; letter-spacing: -.035em; }
+      h3 { margin-bottom: 0; font-size: 14px; }
+      .live-pill, .count-pill {
+        display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; padding: 6px 10px;
+        border: 1px solid var(--line); border-radius: 999px; background: rgba(8, 13, 24, .56); color: #aab7cc; font-size: 11px;
       }
-      .videoBox {
-        background: #050a12;
-        border-radius: 12px;
-        overflow: hidden;
-        min-height: 220px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+      .live-pill::before { width: 6px; height: 6px; border-radius: 50%; background: #68768d; content: ""; }
+      .live-pill.is-live { color: #a7f3d6; border-color: rgba(84, 224, 179, .22); }
+      .live-pill.is-live::before { background: var(--green); box-shadow: 0 0 10px rgba(84, 224, 179, .6); }
+      .count-pill strong { color: var(--text); font-size: 13px; }
+      .video-box {
+        position: relative; display: flex; align-items: center; justify-content: center; min-height: 265px; max-height: 70vh;
+        overflow: hidden; aspect-ratio: 16 / 9; border: 1px solid rgba(148, 163, 184, .12); border-radius: 15px;
+        background: radial-gradient(ellipse at center, rgba(32, 48, 73, .28), transparent 68%), #070b13;
       }
-      .videoStage {
-        position: relative;
-        width: 100%;
-        max-width: 100%;
-        flex: 0 1 auto;
-        line-height: 0;
-        display: none;
+      .video-stage { position: relative; display: none; flex: 0 1 auto; max-width: 100%; line-height: 0; }
+      .video-stage video, .video-stage canvas { display: block; width: 100%; height: 100%; max-height: none; object-fit: fill; }
+      .video-stage canvas { position: absolute; inset: 0; pointer-events: none; }
+      .placeholder { padding: 20px; color: #7f8da4; text-align: center; font-size: 13px; }
+      .placeholder-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 12px; place-items: center; border: 1px solid var(--line); border-radius: 16px; background: #101827; color: #92a7ff; }
+      .placeholder-icon svg { width: 21px; height: 21px; }
+      .controls { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+      button, select {
+        min-height: 41px; padding: 9px 13px; border: 1px solid rgba(148, 163, 184, .18); border-radius: 11px;
+        background: #131e30; color: #dbe5f5; font-size: 13px; font-weight: 630; transition: background .16s, border-color .16s, transform .16s;
       }
-      .videoStage video,
-      .videoStage canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        max-height: none;
-        object-fit: fill;
+      button { cursor: pointer; }
+      button:hover:not(:disabled), select:hover { border-color: rgba(148, 163, 184, .38); background: #1a2940; }
+      button:active:not(:disabled) { transform: translateY(1px); }
+      button:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+      button:disabled { cursor: not-allowed; opacity: .42; }
+      button.primary { border-color: #728fff; background: linear-gradient(135deg, #718bff, #526fe3); color: #fff; box-shadow: 0 7px 18px rgba(76, 105, 221, .2); }
+      button.primary:hover:not(:disabled) { background: linear-gradient(135deg, #829aff, #617df0); }
+      .btn-icon { margin-right: 6px; font-size: 15px; }
+      select { min-width: 160px; flex: 1; cursor: pointer; }
+      .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0 23px; }
+      .metric { padding: 14px; border: 1px solid rgba(148, 163, 184, .1); border-radius: 13px; background: rgba(7, 12, 22, .55); }
+      .metric-label { display: block; color: var(--muted); font-size: 11px; }
+      .metric strong { display: block; margin-top: 4px; font-size: 21px; line-height: 1.2; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
+      .metric small { margin-left: 3px; color: #8997ad; font-size: 11px; font-weight: 500; }
+      .detected-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+      .result-summary { color: var(--muted); font-size: 11px; }
+      .detections { display: flex; flex-direction: column; gap: 8px; min-height: 72px; }
+      .detection-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border: 1px solid rgba(148, 163, 184, .1); border-radius: 12px; background: rgba(7, 12, 22, .48); }
+      .detection-name { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 13px; font-weight: 570; }
+      .detection-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--green); box-shadow: 0 0 9px rgba(84, 224, 179, .34); }
+      .detection-row.is-alert .detection-dot { background: var(--red); box-shadow: 0 0 9px rgba(255, 113, 139, .36); }
+      .confidence { padding: 4px 7px; border-radius: 7px; background: rgba(84, 224, 179, .1); color: #83e9c7; font-size: 11px; font-variant-numeric: tabular-nums; }
+      .is-alert .confidence { background: rgba(255, 113, 139, .1); color: #ff9aac; }
+      .empty { display: flex; align-items: center; min-height: 72px; padding: 12px; border: 1px dashed rgba(148, 163, 184, .16); border-radius: 12px; color: #7f8da4; font-size: 12px; }
+      .notice { display: flex; align-items: flex-start; gap: 9px; margin-top: 18px; padding: 11px 12px; border: 1px solid rgba(108, 140, 255, .14); border-radius: 12px; background: rgba(77, 101, 180, .08); color: #aebde1; font-size: 12px; }
+      .notice::before { width: 7px; height: 7px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: #819cff; content: ""; }
+      .notice.is-alert { border-color: rgba(255, 113, 139, .17); background: rgba(255, 113, 139, .07); color: #f3b5c0; }
+      .notice.is-alert::before { background: var(--red); }
+      .notice.is-error { border-color: rgba(255, 113, 139, .2); color: #ff9eaf; }
+      .notice p { margin: 0; }
+      .notice[hidden] { display: none; }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: minmax(0, 1.25fr) minmax(270px, .85fr); gap: 13px; }
+        .card { padding: 16px; }
       }
-      .videoStage canvas {
-        position: absolute;
-        inset: 0;
-        height: 100%;
-        pointer-events: none;
+      @media (max-width: 720px) {
+        .shell { padding: 20px 14px 28px; }
+        .layout { grid-template-columns: 1fr; }
+        .topbar { margin-bottom: 17px; }
+        .card { border-radius: 17px; }
+        .video-box { min-height: 230px; }
       }
-      .controls {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      button,
-      select {
-        border: 1px solid #334155;
-        border-radius: 10px;
-        padding: 10px 13px;
-        background: #1e293b;
-        color: #f8fafc;
-        font-weight: 600;
-      }
-      button.primary {
-        background: #2563eb;
-        border-color: #2563eb;
-      }
-      button:disabled {
-        opacity: 0.45;
-      }
-      .metrics {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        margin: 12px 0;
-      }
-      .metric {
-        background: #0b1220;
-        padding: 13px;
-        border-radius: 12px;
-      }
-      .metric strong {
-        display: block;
-        font-size: 21px;
-        margin-top: 5px;
-      }
-      .list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .item {
-        padding: 11px;
-        background: #0b1220;
-        border-radius: 10px;
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-      }
-      .note {
-        font-size: 13px;
-        line-height: 1.6;
-        color: #94a3b8;
-        margin-top: 12px;
-      }
-      .health {
-        margin-top: 14px;
-        padding: 12px;
-        border-radius: 12px;
-        background: #0b1220;
-        white-space: pre-line;
-        font-size: 13px;
-        line-height: 1.6;
-      }
-      @media (max-width: 800px) {
-        .grid {
-          grid-template-columns: 1fr;
-        }
-        .wrap {
-          padding: 13px;
-        }
+      @media (max-width: 420px) {
+        .shell { padding-inline: 11px; }
+        .controls { gap: 7px; }
+        .controls button { flex: 1; }
+        select { min-width: 100%; order: 3; }
+        #switchBtn { order: 4; }
+        .metric { padding: 12px; }
       }
     </style>
   </head>
   <body>
-    <main class="wrap">
-      <div class="top">
-        <div>
-          <h1>Nhận diện webcam bằng YOLO</h1>
-          <div class="muted">
-            best.pt · Telegram · Supabase Storage/Database
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark" aria-hidden="true"></span><span>Mask<span class="brand-accent">Vision</span></span></div>
+        <div class="status" id="state" role="status" title="Trạng thái model"><span class="status-dot"></span><span>Đang kết nối</span></div>
+      </header>
+      <main class="layout">
+        <section class="card">
+          <div class="section-head">
+            <div><p class="eyebrow">CAMERA</p><h1>Nhận diện trực tiếp</h1></div>
+            <span class="live-pill" id="liveStatus">Đang tắt</span>
           </div>
-        </div>
-        <span class="status" id="state">Đang kiểm tra dịch vụ…</span>
-      </div>
-      <div class="grid">
-        <section class="panel">
-          <h2>Webcam trực tiếp</h2>
-          <div class="videoBox">
-            <div class="videoStage">
+          <div class="video-box" id="videoBox">
+            <div class="video-stage" id="videoStage">
               <video id="video" autoplay playsinline muted></video>
               <canvas id="overlay" aria-hidden="true"></canvas>
             </div>
-            <span id="placeholder" class="muted"
-              >Bấm “Bật webcam” để bắt đầu</span
-            >
+            <div class="placeholder" id="placeholder">
+              <div class="placeholder-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7.5h3l1.5-2h7l1.5 2h3A1.5 1.5 0 0 1 21.5 9v9a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5Z"/><circle cx="12" cy="13" r="3.5"/></svg>
+              </div>
+              Bật camera để bắt đầu
+            </div>
           </div>
           <div class="controls">
-            <button class="primary" id="startBtn">Bật webcam</button
-            ><button id="stopBtn" disabled>Dừng</button
-            ><select id="cameraSelect" aria-label="Chọn camera">
-              <option value="">Camera mặc định</option></select
-            ><button id="switchBtn">Đổi camera</button>
-          </div>
-          <div class="note">
-            Trình duyệt gửi ảnh định kỳ lên máy chủ để chạy model. Cần mở trang
-            bằng HTTPS (Render tự cung cấp) hoặc localhost để dùng webcam.
+            <button class="primary" id="startBtn"><span class="btn-icon">▶</span>Bật camera</button>
+            <button id="stopBtn" disabled>Dừng</button>
+            <select id="cameraSelect" aria-label="Chọn camera"><option value="">Camera mặc định</option></select>
+            <button id="switchBtn">Đổi camera</button>
           </div>
         </section>
-        <aside class="panel">
-          <h2>Kết quả nhận diện</h2>
+        <aside class="card">
+          <div class="section-head">
+            <h2>Phát hiện</h2>
+            <span class="count-pill"><strong id="count">0</strong> đối tượng</span>
+          </div>
           <div class="metrics">
-            <div class="metric">
-              <span class="muted">Thời gian AI</span
-              ><strong id="infer">— ms</strong>
-            </div>
-            <div class="metric">
-              <span class="muted">Độ trễ gửi/nhận</span
-              ><strong id="rtt">— ms</strong>
-            </div>
-            <div class="metric">
-              <span class="muted">Số đối tượng</span
-              ><strong id="count">0</strong>
-            </div>
-            <div class="metric">
-              <span class="muted">Khung hình xử lý</span
-              ><strong id="fps">—</strong>
-            </div>
+            <div class="metric"><span class="metric-label">Thời gian AI</span><strong><span id="infer">—</span><small>ms</small></strong></div>
+            <div class="metric"><span class="metric-label">Phản hồi</span><strong><span id="rtt">—</span><small>ms</small></strong></div>
           </div>
-          <h3>Danh sách đối tượng</h3>
-          <div id="detections" class="list">
-            <div class="muted">Chưa có kết quả.</div>
-          </div>
-          <div id="action" class="health">
-            Telegram: đang kiểm tra… Supabase: đang kiểm tra…
-          </div>
-          <div id="health" class="health">Đang kiểm tra model…</div>
+          <div class="detected-head"><h3>Đối tượng</h3><span class="result-summary" id="resultSummary">—</span></div>
+          <div id="detections" class="detections"><div class="empty">Chưa phát hiện đối tượng</div></div>
+          <div id="action" class="notice" aria-live="polite" hidden><p></p></div>
         </aside>
-      </div>
-    </main>
+      </main>
+    </div>
     <script>
-      const video=document.getElementById('video'), overlay=document.getElementById('overlay'), placeholder=document.getElementById('placeholder');
-      const startBtn=document.getElementById('startBtn'), stopBtn=document.getElementById('stopBtn'), cameraSelect=document.getElementById('cameraSelect');
-      const CAPTURE_INTERVAL_MS=1200;
-      let stream=null, running=false, starting=false, busy=false, timer=null, lastStart=0, detectionPausedUntil=0;
-      async function health(){try{const r=await fetch('/api/health');const d=await r.json();document.getElementById('state').textContent=d.model_loaded?'Model đã sẵn sàng':'Model chưa sẵn sàng';document.getElementById('health').textContent=`Model: ${d.model_loaded?'OK':'LỖI'}${d.model_error?'\n'+d.model_error:''}\nTelegram: ${d.telegram_configured?'đã cấu hình':'chưa cấu hình'}\nSupabase: ${d.supabase_ready?'đã kết nối':'chưa kết nối'}${d.supabase_error?'\n'+d.supabase_error:''}`;if(!running)document.getElementById('action').textContent=`Telegram: ${d.telegram_configured?'đã cấu hình':'chưa cấu hình'}\nSupabase: ${d.supabase_ready?'đã kết nối':'chưa kết nối'}`;}catch(e){document.getElementById('health').textContent='Không kiểm tra được server: '+e.message}}
-      async function listCameras(){try{const devices=await navigator.mediaDevices.enumerateDevices();const cams=devices.filter(x=>x.kind==='videoinput');const current=cameraSelect.value;cameraSelect.innerHTML='<option value="">Camera mặc định</option>';cams.forEach((c,i)=>{const o=document.createElement('option');o.value=c.deviceId;o.textContent=c.label||`Camera ${i+1}`;cameraSelect.appendChild(o)});if(current)cameraSelect.value=current;}catch(e){}}
-      function resizeOverlay(){if(!video.videoWidth||!video.videoHeight)return;const stage=video.parentElement,box=stage.parentElement;const scale=Math.min(box.clientWidth/video.videoWidth,(window.innerHeight*0.68)/video.videoHeight);const width=Math.max(1,Math.round(video.videoWidth*scale));const height=Math.max(1,Math.round(video.videoHeight*scale));stage.style.width=`${width}px`;stage.style.height=`${height}px`;stage.style.display='block';if(overlay.width!==video.videoWidth)overlay.width=video.videoWidth;if(overlay.height!==video.videoHeight)overlay.height=video.videoHeight;}
-      function drawDetections(detections, sourceWidth, sourceHeight){resizeOverlay();const context=overlay.getContext('2d');context.clearRect(0,0,overlay.width,overlay.height);const scaleX=overlay.width/sourceWidth;const scaleY=overlay.height/sourceHeight;context.font='bold 16px system-ui';context.lineWidth=3;detections.forEach(d=>{if(!Array.isArray(d.bbox)||d.bbox.length!==4)return;const [x1,y1,x2,y2]=d.bbox.map((value,index)=>value*(index%2?scaleY:scaleX));const color=d.class_name.toLowerCase().includes('khong')||d.class_name.toLowerCase().includes('sai')?'#fb7185':'#4ade80';context.strokeStyle=color;context.fillStyle=color;context.strokeRect(x1,y1,x2-x1,y2-y1);const label=`${d.class_name} ${(d.confidence*100).toFixed(1)}%`;const textWidth=context.measureText(label).width;const labelY=Math.max(22,y1);context.fillRect(x1,labelY-22,textWidth+10,22);context.fillStyle='#07111f';context.fillText(label,x1+5,labelY-6);});}
-      function scheduleCapture(){if(!running)return;if(!busy&&Date.now()>=detectionPausedUntil)captureAndDetect();timer=setTimeout(scheduleCapture,CAPTURE_INTERVAL_MS);}
-      async function start(){if(running||starting)return;starting=true;try{await stop(false);startBtn.disabled=true;document.getElementById('action').textContent='Đang chờ quyền camera…';const constraints={audio:false,video:cameraSelect.value?{deviceId:{exact:cameraSelect.value},width:{ideal:1280},height:{ideal:720}}:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}};stream=await navigator.mediaDevices.getUserMedia(constraints);video.srcObject=stream;video.style.display='block';placeholder.style.display='none';document.getElementById('action').textContent='Đang khởi tạo video…';await new Promise(resolve=>{if(video.readyState>=1)resolve();else video.addEventListener('loadedmetadata',resolve,{once:true});});await video.play();if(!video.videoWidth||!video.videoHeight)throw new Error('Webcam chưa cung cấp được kích thước video');running=true;stopBtn.disabled=false;document.getElementById('action').textContent='Đang gửi frame lên server…';await listCameras();scheduleCapture();}catch(e){document.getElementById('action').textContent='Chưa mở được webcam: '+e.message;}finally{starting=false;if(!running)startBtn.disabled=false;}}
-      function stop(update=true){running=false;if(timer)clearTimeout(timer);timer=null;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);startBtn.disabled=false;stopBtn.disabled=true;if(update){video.style.display='none';video.parentElement.style.display='none';placeholder.style.display='block';placeholder.textContent='Đã dừng webcam';}}
-      async function captureAndDetect(){if(!running||busy||Date.now()<detectionPausedUntil||video.readyState<2)return;busy=true;try{const canvas=document.createElement('canvas');const maxW=640;const scale=Math.min(1,maxW/video.videoWidth);canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.72));if(!blob)throw new Error('Không tạo được frame webcam');const form=new FormData();form.append('frame',blob,'webcam.jpg');const t0=performance.now();const response=await fetch('/api/detect',{method:'POST',body:form});const rtt=performance.now()-t0;const body=await response.text();let d;try{d=body?JSON.parse(body):null;}catch(parseError){throw new Error(`Server trả response không hợp lệ (${response.status})`);}if(!d)throw new Error(`Server không trả dữ liệu (${response.status})`);if(response.status===429){detectionPausedUntil=Date.now()+15000;document.getElementById('state').textContent='Server đang giới hạn request';document.getElementById('action').textContent='Tạm dừng gửi frame 15 giây để tránh quá tải…';return;}if(response.status===503){detectionPausedUntil=Date.now()+10000;document.getElementById('state').textContent='Model server chưa sẵn sàng';throw new Error(d.error||'Model server chưa sẵn sàng');}if(!response.ok){detectionPausedUntil=Date.now()+5000;throw new Error(d.error||'Server lỗi');}drawDetections(d.detections,canvas.width,canvas.height);document.getElementById('infer').textContent=d.inference_ms+' ms';document.getElementById('rtt').textContent=Math.round(rtt)+' ms';document.getElementById('count').textContent=d.detections.length;const now=performance.now();if(lastStart)document.getElementById('fps').textContent=(1000/(now-lastStart)).toFixed(1)+' /s';lastStart=now;const list=document.getElementById('detections');list.innerHTML='';if(!d.detections.length){list.innerHTML='<div class="muted">Không phát hiện đối tượng.</div>';}d.detections.forEach(x=>{const row=document.createElement('div');row.className='item';const name=document.createElement('span');name.textContent=x.class_name;const conf=document.createElement('strong');conf.textContent=(x.confidence*100).toFixed(1)+'%';row.append(name,conf);list.appendChild(row)});if(d.message)document.getElementById('action').textContent=d.message;else if(d.alert_status?.message&&d.alert_status.state!=='idle')document.getElementById('action').textContent=d.alert_status.message;}catch(e){document.getElementById('state').textContent='Lỗi nhận diện';document.getElementById('action').textContent=e.message;}finally{busy=false;}}
-      video.addEventListener('loadedmetadata',resizeOverlay);window.addEventListener('resize',resizeOverlay);startBtn.addEventListener('click',start);stopBtn.addEventListener('click',()=>stop());document.getElementById('switchBtn').addEventListener('click',async()=>{if(!running){await listCameras();cameraSelect.selectedIndex=(cameraSelect.selectedIndex+1)%cameraSelect.options.length;return;}const devices=Array.from(cameraSelect.options);cameraSelect.selectedIndex=(cameraSelect.selectedIndex+1)%devices.length;await start();});navigator.mediaDevices?.addEventListener?.('devicechange',listCameras);health();listCameras();setInterval(health,15000);
+      const video = document.getElementById('video');
+      const videoBox = document.getElementById('videoBox');
+      const videoStage = document.getElementById('videoStage');
+      const overlay = document.getElementById('overlay');
+      const placeholder = document.getElementById('placeholder');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const switchBtn = document.getElementById('switchBtn');
+      const cameraSelect = document.getElementById('cameraSelect');
+      const state = document.getElementById('state');
+      const liveStatus = document.getElementById('liveStatus');
+      const action = document.getElementById('action');
+      const FRAME_GAP_MS = 350;
+      const MAX_FRAME_WIDTH = 640;
+      let stream = null;
+      let running = false;
+      let starting = false;
+      let busy = false;
+      let timer = null;
+      let runToken = 0;
+      let detectionPausedUntil = 0;
+
+      function setNotice(message, mode) {
+        if (!message) {
+          action.hidden = true;
+          return;
+        }
+        action.hidden = false;
+        action.className = 'notice' + (mode ? ' is-' + mode : '');
+        action.querySelector('p').textContent = message;
+      }
+
+      function setServerState(message, mode, detail) {
+        state.className = 'status' + (mode ? ' is-' + mode : '');
+        state.lastElementChild.textContent = message;
+        state.title = detail || message;
+      }
+
+      async function refreshHealth() {
+        try {
+          const response = await fetch('/api/health', { cache: 'no-store' });
+          const data = await response.json();
+          if (!data.model_loaded) {
+            setServerState('Model lỗi', 'error', data.model_error || 'Model chưa sẵn sàng');
+            if (!running) setNotice('Model chưa sẵn sàng', 'error');
+            return;
+          }
+          setServerState('Sẵn sàng', 'ready', 'Model đã sẵn sàng');
+        } catch (error) {
+          setServerState('Mất kết nối', 'error', error.message);
+          if (!running) setNotice('Không kết nối được máy chủ', 'error');
+        }
+      }
+
+      async function listCameras() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const cameras = devices.filter(function (device) { return device.kind === 'videoinput'; });
+          const selected = cameraSelect.value;
+          cameraSelect.replaceChildren(new Option('Camera mặc định', ''));
+          cameras.forEach(function (camera, index) {
+            const option = new Option(camera.label || ('Camera ' + (index + 1)), camera.deviceId);
+            cameraSelect.add(option);
+          });
+          cameraSelect.value = selected;
+        } catch (error) {}
+      }
+
+      function resizeOverlay() {
+        if (!video.videoWidth || !video.videoHeight) return;
+        videoBox.style.aspectRatio = video.videoWidth + ' / ' + video.videoHeight;
+        const scale = Math.min(
+          videoBox.clientWidth / video.videoWidth,
+          videoBox.clientHeight / video.videoHeight,
+          (window.innerHeight * 0.68) / video.videoHeight
+        );
+        const width = Math.max(1, Math.round(video.videoWidth * scale));
+        const height = Math.max(1, Math.round(video.videoHeight * scale));
+        videoStage.style.width = width + 'px';
+        videoStage.style.height = height + 'px';
+        videoStage.style.display = 'block';
+        if (overlay.width !== video.videoWidth) overlay.width = video.videoWidth;
+        if (overlay.height !== video.videoHeight) overlay.height = video.videoHeight;
+      }
+
+      function normalizedName(value) {
+        return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      }
+
+      function drawDetections(detections, sourceWidth, sourceHeight) {
+        resizeOverlay();
+        const context = overlay.getContext('2d');
+        context.clearRect(0, 0, overlay.width, overlay.height);
+        const scaleX = overlay.width / sourceWidth;
+        const scaleY = overlay.height / sourceHeight;
+        context.lineWidth = Math.max(2, overlay.width / 480);
+        context.font = '600 ' + Math.max(14, overlay.width / 82) + 'px system-ui, sans-serif';
+        detections.forEach(function (detection) {
+          if (!Array.isArray(detection.bbox) || detection.bbox.length !== 4) return;
+          const coords = detection.bbox.map(function (value, index) {
+            return value * (index % 2 ? scaleY : scaleX);
+          });
+          const x1 = coords[0], y1 = coords[1], x2 = coords[2], y2 = coords[3];
+          if (x2 <= x1 || y2 <= y1) return;
+          const alertClass = normalizedName(detection.class_name).includes('khong') ||
+            normalizedName(detection.class_name).includes('sai');
+          const color = alertClass ? '#ff718b' : '#54e0b3';
+          context.strokeStyle = color;
+          context.fillStyle = color;
+          context.strokeRect(x1, y1, x2 - x1, y2 - y1);
+          const label = detection.class_name + ' ' + (detection.confidence * 100).toFixed(1) + '%';
+          const textWidth = context.measureText(label).width;
+          const labelTop = Math.max(22, y1);
+          context.fillRect(x1, labelTop - 22, textWidth + 10, 22);
+          context.fillStyle = '#07111f';
+          context.fillText(label, x1 + 5, labelTop - 6);
+        });
+      }
+
+      function scheduleCapture(delay) {
+        if (timer) clearTimeout(timer);
+        if (!running) return;
+        timer = setTimeout(function () {
+          timer = null;
+          captureAndDetect();
+        }, delay === undefined ? FRAME_GAP_MS : delay);
+      }
+
+      async function captureAndDetect() {
+        if (!running) return;
+        if (busy) {
+          scheduleCapture(120);
+          return;
+        }
+        const wait = detectionPausedUntil - Date.now();
+        if (wait > 0) {
+          scheduleCapture(Math.min(wait, 15000));
+          return;
+        }
+        busy = true;
+        const token = runToken;
+        try {
+          const canvas = document.createElement('canvas');
+          const scale = Math.min(1, MAX_FRAME_WIDTH / video.videoWidth);
+          canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+          canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+          canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise(function (resolve) {
+            canvas.toBlob(resolve, 'image/jpeg', 0.72);
+          });
+          if (!blob) throw new Error('Không tạo được ảnh webcam');
+          const form = new FormData();
+          form.append('frame', blob, 'webcam.jpg');
+          const startTime = performance.now();
+          const response = await fetch('/api/detect', { method: 'POST', body: form, cache: 'no-store' });
+          const rtt = performance.now() - startTime;
+          const body = await response.text();
+          let data;
+          try {
+            data = body ? JSON.parse(body) : null;
+          } catch (error) {
+            throw new Error('Phản hồi máy chủ không hợp lệ');
+          }
+          if (!data) throw new Error('Máy chủ không trả dữ liệu');
+          if (token !== runToken) return;
+          if (response.status === 429) {
+            detectionPausedUntil = Date.now() + 15000;
+            setNotice('Tạm nghỉ 15 giây để giảm tải máy chủ', 'error');
+            return;
+          }
+          if (response.status === 503) {
+            detectionPausedUntil = Date.now() + 10000;
+            setNotice(data.error || 'Model chưa sẵn sàng', 'error');
+            return;
+          }
+          if (!response.ok) throw new Error(data.error || 'Lỗi máy chủ');
+          const detections = data.detections || [];
+          drawDetections(detections, canvas.width, canvas.height);
+          document.getElementById('infer').textContent = data.inference_ms === undefined ? '—' : data.inference_ms;
+          document.getElementById('rtt').textContent = Math.round(rtt);
+          document.getElementById('count').textContent = detections.length;
+          document.getElementById('resultSummary').textContent = detections.length ? 'Đang nhận diện' : 'Không phát hiện';
+          renderDetections(detections);
+          if (data.message) setNotice(data.message, data.alert ? 'alert' : '');
+          else if (data.alert && data.alert_status && data.alert_status.message) setNotice(data.alert_status.message, 'alert');
+          else setNotice('', '');
+          liveStatus.textContent = 'Đang nhận diện';
+          liveStatus.classList.add('is-live');
+        } catch (error) {
+          if (token === runToken && error.name !== 'AbortError') {
+            detectionPausedUntil = Date.now() + 2000;
+            setNotice(error.message, 'error');
+          }
+        } finally {
+          busy = false;
+          if (running) scheduleCapture(FRAME_GAP_MS);
+        }
+      }
+
+      function renderDetections(detections) {
+        const list = document.getElementById('detections');
+        list.replaceChildren();
+        if (!detections.length) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = 'Chưa phát hiện đối tượng';
+          list.appendChild(empty);
+          return;
+        }
+        detections.forEach(function (detection) {
+          const alertClass = normalizedName(detection.class_name).includes('khong') ||
+            normalizedName(detection.class_name).includes('sai');
+          const row = document.createElement('div');
+          row.className = 'detection-row' + (alertClass ? ' is-alert' : '');
+          const name = document.createElement('span');
+          name.className = 'detection-name';
+          const dot = document.createElement('i');
+          dot.className = 'detection-dot';
+          const label = document.createElement('span');
+          label.textContent = detection.class_name;
+          name.append(dot, label);
+          const confidence = document.createElement('span');
+          confidence.className = 'confidence';
+          confidence.textContent = (detection.confidence * 100).toFixed(1) + '%';
+          row.append(name, confidence);
+          list.appendChild(row);
+        });
+      }
+
+      async function startCamera() {
+        if (running || starting) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setNotice('Trình duyệt không hỗ trợ camera', 'error');
+          return;
+        }
+        starting = true;
+        startBtn.disabled = true;
+        setNotice('Đang mở camera…', '');
+        try {
+          const constraints = {
+            audio: false,
+            video: cameraSelect.value
+              ? { deviceId: { exact: cameraSelect.value }, width: { ideal: 1280 }, height: { ideal: 720 } }
+              : { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }
+          };
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          video.srcObject = stream;
+          video.style.display = 'block';
+          placeholder.style.display = 'none';
+          await new Promise(function (resolve) {
+            if (video.readyState >= 1) resolve();
+            else video.addEventListener('loadedmetadata', resolve, { once: true });
+          });
+          await video.play();
+          if (!video.videoWidth || !video.videoHeight) throw new Error('Không lấy được hình ảnh từ camera');
+          resizeOverlay();
+          running = true;
+          runToken += 1;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          liveStatus.textContent = 'Đang nhận diện';
+          liveStatus.classList.add('is-live');
+          setNotice('Đang nhận diện', '');
+          await listCameras();
+          scheduleCapture(0);
+        } catch (error) {
+          stopCamera(true);
+          setNotice('Không mở được camera: ' + error.message, 'error');
+        } finally {
+          starting = false;
+          if (!running) startBtn.disabled = false;
+        }
+      }
+
+      function stopCamera(showMessage) {
+        running = false;
+        runToken += 1;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        if (stream) {
+          stream.getTracks().forEach(function (track) { track.stop(); });
+          stream = null;
+        }
+        video.srcObject = null;
+        video.style.display = 'none';
+        videoStage.style.display = 'none';
+        overlay.getContext('2d').clearRect(0, 0, overlay.width, overlay.height);
+        placeholder.style.display = 'block';
+        placeholder.textContent = showMessage ? 'Camera đã tắt' : 'Đang chuyển camera…';
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        liveStatus.textContent = 'Đang tắt';
+        liveStatus.classList.remove('is-live');
+        setNotice('', '');
+      }
+
+      async function switchCamera() {
+        await listCameras();
+        if (cameraSelect.options.length <= 1) return;
+        cameraSelect.selectedIndex = (cameraSelect.selectedIndex + 1) % cameraSelect.options.length;
+        if (running) {
+          stopCamera(false);
+          await startCamera();
+        }
+      }
+
+      video.addEventListener('loadedmetadata', resizeOverlay);
+      window.addEventListener('resize', resizeOverlay);
+      startBtn.addEventListener('click', startCamera);
+      stopBtn.addEventListener('click', function () { stopCamera(true); });
+      switchBtn.addEventListener('click', switchCamera);
+      if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        navigator.mediaDevices.addEventListener('devicechange', listCameras);
+      }
+      refreshHealth();
+      listCameras();
     </script>
   </body>
 </html>
