@@ -5,3 +5,4 @@ __pycache__/
 best.pt
 uploaded_models/
 runtime_models/
+firmware/esp32_cam/secrets.h

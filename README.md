@@ -61,3 +61,25 @@ Bảng `public.detection_events` cần các cột `device_id` (text), `class_nam
 - Server tải model ONNX từ Supabase theo từng lần khởi động và chỉ giữ một ONNX Runtime session trong RAM.
 - Chỉ class `Khong deo` và `Deo sai cach` tạo event Telegram/Supabase; các class khác vẫn hiện trên giao diện.
 - Render Free dùng filesystem tạm thời; file tải về chỉ là cache và model sẽ được tải lại sau khi service khởi động lại.
+
+## Hai chế độ camera
+
+- **Camera laptop:** trình duyệt chụp frame và gửi trực tiếp đến `/api/detect` trên Render.
+- **Camera IoT:** ESP32-CAM gửi JPEG trực tiếp bằng HTTPS đến `/api/iot/frame`; Render chạy cùng model ONNX. Trình duyệt lấy frame và bbox mới nhất từ `/api/iot/latest`.
+- ESP32 không gửi vào IP `192.168.137.1` và không dùng giao thức TCP 4 byte + JPEG nữa. IP đó chỉ thuộc mạng riêng của laptop. Hãy nạp firmware trong `firmware/esp32_cam` để ESP32 gọi domain HTTPS của Render.
+- ESP32 đo thời gian upload đến khi nhận phản hồi Render rồi gửi số đo qua `/api/iot/metrics`. Độ trễ toàn trình dùng thời gian chụp đã đồng bộ NTP trên ESP32 đến lúc trình duyệt vẽ bbox.
+- Render chỉ giữ frame IoT mới nhất trong RAM; frame và sequence sẽ mất khi service khởi động lại. Mỗi request IoT vẫn chạy cảnh báo/lưu event như camera laptop.
+
+## Cấu hình bảo vệ camera IoT
+
+Trong Render Dashboard → service → **Environment**, đặt hai secret khác nhau:
+
+- `IOT_DEVICE_TOKEN`: khóa gửi frame, điền vào `firmware/esp32_cam/secrets.h`.
+- `IOT_VIEW_TOKEN`: khóa xem frame, nhập trong giao diện khi chọn chế độ IoT.
+
+`render.yaml` khai báo hai biến này là secret không đồng bộ. Không commit `secrets.h` hoặc các giá trị token.
+`/api/health` có `iot_upload_configured` và `iot_view_configured` để kiểm tra hai khóa đã được Render nạp.
+
+## Firmware ESP32-CAM
+
+Mã nguồn được chia trong [`firmware/esp32_cam`](firmware/esp32_cam): `esp32_cam.ino` quản lý vòng lặp, `camera_capture.*` cấu hình và chụp GC2145, `cloud_sender.*` gửi HTTPS và báo thời gian round-trip, `config.h` chứa domain và thông số, `secrets.example.h` là mẫu thông tin Wi-Fi/token. Chi tiết nạp firmware và thay URL nằm trong [hướng dẫn firmware](firmware/esp32_cam/README.md).

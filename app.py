@@ -1,5 +1,7 @@
 import ast
+import base64
 from concurrent.futures import ThreadPoolExecutor
+import hmac
 import json
 import os
 import threading
@@ -50,6 +52,9 @@ YOLO_MODEL_BUCKET = os.getenv("YOLO_MODEL_BUCKET", "yolo-models").strip()
 YOLO_MODEL_OBJECT = os.getenv("YOLO_MODEL_OBJECT", "best.onnx").strip()
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "detection_events").strip()
 YOLO_CLASS_NAMES = [name.strip() for name in os.getenv("YOLO_CLASS_NAMES", "").split(",") if name.strip()]
+IOT_DEVICE_TOKEN = os.getenv("IOT_DEVICE_TOKEN", "").strip()
+IOT_VIEW_TOKEN = os.getenv("IOT_VIEW_TOKEN", "").strip()
+IOT_INSTANCE_ID = uuid.uuid4().hex
 
 ALERT_CLASSES = {"khong deo", "deo sai cach"}
 last_alert_at = 0.0
@@ -62,6 +67,23 @@ model_error = None
 model_path = None
 supabase = None
 supabase_error = None
+iot_result_lock = threading.Lock()
+latest_iot_result = {
+    "instance_id": IOT_INSTANCE_ID,
+    "sequence": 0,
+    "frame_jpeg": None,
+    "width": 0,
+    "height": 0,
+    "detections": [],
+    "inference_ms": None,
+    "server_ms": None,
+    "captured_at_ms": None,
+    "device_rtt_ms": None,
+    "metrics_sequence": 0,
+    "alert": None,
+    "message": "",
+    "alert_status": {},
+}
 
 
 class OnnxDetector:
@@ -448,13 +470,14 @@ def health():
         "supabase_ready": supabase is not None,
         "supabase_error": supabase_error,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        "iot_upload_configured": bool(IOT_DEVICE_TOKEN),
+        "iot_view_configured": bool(IOT_VIEW_TOKEN),
         "classes": model.names if model is not None else {},
     })
 
 
 @app.post("/api/detect")
 def detect():
-    global last_alert_at
     server_start = time.perf_counter()
     active_model = model
     active_model_error = model_error
@@ -469,6 +492,15 @@ def detect():
     if frame is None:
         return jsonify({"error": "Không đọc được ảnh webcam"}), 400
 
+    result, status = process_detection(frame, server_start)
+    return jsonify(result), status
+
+
+def process_detection(frame, server_start):
+    global last_alert_at
+    active_model = model
+    if active_model is None:
+        return {"error": model_error or "Model chưa tải được."}, 503
     try:
         inference_start = time.perf_counter()
         detections = active_model.predict(frame, CONF)
@@ -489,7 +521,7 @@ def detect():
                 annotated = draw_detections(frame, detections)
                 ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
                 if not ok:
-                    return jsonify({"error": "Không mã hóa được ảnh cảnh báo"}), 500
+                    return {"error": "Không mã hóa được ảnh cảnh báo"}, 500
                 image_bytes = encoded.tobytes()
                 caption = (
                     f"⚠️ CẢNH BÁO NHẬN DIỆN\nThiết bị: {DEVICE_ID}\n"
@@ -512,7 +544,7 @@ def detect():
             else:
                 action_message = "Đang trong thời gian chờ trước khi gửi cảnh báo tiếp theo"
 
-        return jsonify({
+        return {
             "detections": detections,
             "inference_ms": round(inference_ms, 1),
             "server_ms": round((time.perf_counter() - server_start) * 1000, 1),
@@ -522,10 +554,114 @@ def detect():
             "image_path": image_path,
             "message": action_message,
             "alert_status": get_alert_status(),
-        })
+        }, 200
     except Exception as error:
         print("[DETECT] Lỗi:", error)
-        return jsonify({"error": str(error)}), 500
+        return {"error": str(error)}, 500
+
+
+def token_matches(expected, supplied):
+    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
+
+
+@app.post("/api/iot/frame")
+def iot_frame():
+    global latest_iot_result
+    server_start = time.perf_counter()
+    if not IOT_DEVICE_TOKEN:
+        return jsonify({"error": "IOT_DEVICE_TOKEN chưa được cấu hình trên Render."}), 503
+    if not token_matches(IOT_DEVICE_TOKEN, request.headers.get("X-IoT-Device-Token", "")):
+        return jsonify({"error": "Mã thiết bị IoT không hợp lệ."}), 401
+    if model is None:
+        return jsonify({"error": model_error or "Model chưa tải được."}), 503
+
+    raw = request.get_data(cache=False)
+    if not raw:
+        return jsonify({"error": "Ảnh JPEG rỗng."}), 400
+    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        return jsonify({"error": "Không giải mã được ảnh JPEG từ ESP32-CAM."}), 400
+
+    result, status = process_detection(frame, server_start)
+    if status != 200:
+        return jsonify(result), status
+
+    try:
+        captured_at_ms = int(request.headers.get("X-IoT-Captured-At-Ms", "0"))
+    except (TypeError, ValueError):
+        captured_at_ms = 0
+    height, width = frame.shape[:2]
+    with iot_result_lock:
+        sequence = latest_iot_result["sequence"] + 1
+        latest_iot_result = {
+            "instance_id": IOT_INSTANCE_ID,
+            "sequence": sequence,
+            "frame_jpeg": base64.b64encode(raw).decode("ascii"),
+            "width": width,
+            "height": height,
+            "detections": result["detections"],
+            "inference_ms": result["inference_ms"],
+            "server_ms": result["server_ms"],
+            "captured_at_ms": captured_at_ms if captured_at_ms > 0 else None,
+            "device_rtt_ms": None,
+            "metrics_sequence": 0,
+            "alert": result["alert"],
+            "message": result["message"],
+            "alert_status": result["alert_status"],
+        }
+
+    response = jsonify({"ok": True, "sequence": sequence, "inference_ms": result["inference_ms"]})
+    response.headers["X-IoT-Sequence"] = str(sequence)
+    return response
+
+
+@app.post("/api/iot/metrics")
+def iot_metrics():
+    global latest_iot_result
+    if not IOT_DEVICE_TOKEN:
+        return jsonify({"error": "IOT_DEVICE_TOKEN chưa được cấu hình trên Render."}), 503
+    if not token_matches(IOT_DEVICE_TOKEN, request.headers.get("X-IoT-Device-Token", "")):
+        return jsonify({"error": "Mã thiết bị IoT không hợp lệ."}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        sequence = int(data.get("sequence", 0))
+        device_rtt_ms = float(data.get("device_rtt_ms"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Thiếu sequence hoặc device_rtt_ms không hợp lệ."}), 400
+    if device_rtt_ms < 0:
+        return jsonify({"error": "device_rtt_ms không hợp lệ."}), 400
+    with iot_result_lock:
+        if latest_iot_result["sequence"] == sequence:
+            latest_iot_result["device_rtt_ms"] = round(device_rtt_ms, 1)
+            latest_iot_result["metrics_sequence"] += 1
+    return jsonify({"ok": True})
+
+
+@app.get("/api/iot/latest")
+def iot_latest():
+    if not IOT_VIEW_TOKEN:
+        return jsonify({"error": "IOT_VIEW_TOKEN chưa được cấu hình trên Render."}), 503
+    if not token_matches(IOT_VIEW_TOKEN, request.headers.get("X-IoT-View-Token", "")):
+        return jsonify({"error": "Mã xem camera IoT không hợp lệ."}), 401
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        return jsonify({"error": "Tham số after không hợp lệ."}), 400
+    after_instance = request.args.get("instance", "")
+    with iot_result_lock:
+        snapshot = latest_iot_result.copy()
+    if snapshot["sequence"] == 0 or (
+        snapshot["sequence"] <= after and after_instance == snapshot["instance_id"]
+    ):
+        return jsonify({
+            "updated": False,
+            "instance_id": snapshot["instance_id"],
+            "sequence": snapshot["sequence"],
+            "device_rtt_ms": snapshot["device_rtt_ms"],
+            "metrics_sequence": snapshot["metrics_sequence"],
+        })
+    snapshot["updated"] = True
+    return jsonify(snapshot)
 
 
 init_services()

@@ -42,3 +42,7 @@ services:
         value: detection_events
       - key: MAX_FRAME_BYTES
         value: "2097152"
+      - key: IOT_DEVICE_TOKEN
+        sync: false
+      - key: IOT_VIEW_TOKEN
+        sync: false
