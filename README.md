@@ -54,7 +54,8 @@ Bảng `public.detection_events` cần các cột `device_id` (text), `class_nam
 
 ## Luồng hoạt động
 
-- Trình duyệt gửi JPEG tối đa 960 px mỗi 1,2 giây; server chỉ xử lý tuần tự.
+- Trình duyệt gửi JPEG tối đa 640 px mỗi 1,2 giây; server chỉ xử lý tuần tự.
+- Inference giữ input ONNX 320 px; Telegram và Supabase chạy nền để không chặn response nhận diện.
 - Server tải model ONNX từ Supabase theo từng lần khởi động và chỉ giữ một ONNX Runtime session trong RAM.
 - Chỉ class `Khong deo` và `Deo sai cach` tạo event Telegram/Supabase; các class khác vẫn hiện trên giao diện.
 - Render Free dùng filesystem tạm thời; file tải về chỉ là cache và model sẽ được tải lại sau khi service khởi động lại.

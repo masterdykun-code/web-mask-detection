@@ -1,4 +1,5 @@
 import ast
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import threading
@@ -17,6 +18,8 @@ import numpy as np
 import onnxruntime as ort
 import requests
 from flask import Flask, jsonify, render_template, request
+
+cv2.setNumThreads(1)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_CACHE_DIR = os.path.join(BASE_DIR, "runtime_models")
@@ -51,6 +54,9 @@ YOLO_CLASS_NAMES = [name.strip() for name in os.getenv("YOLO_CLASS_NAMES", "").s
 ALERT_CLASSES = {"khong deo", "deo sai cach"}
 last_alert_at = 0.0
 alert_lock = threading.Lock()
+alert_status_lock = threading.Lock()
+alert_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="alert-delivery")
+latest_alert_status = {"event_id": None, "state": "idle", "message": ""}
 model = None
 model_error = None
 model_path = None
@@ -66,8 +72,7 @@ class OnnxDetector:
         options.intra_op_num_threads = ORT_NUM_THREADS
         options.inter_op_num_threads = 1
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.enable_cpu_mem_arena = False
-        options.enable_mem_pattern = False
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.session = ort.InferenceSession(
             path,
             sess_options=options,
@@ -120,7 +125,14 @@ class OnnxDetector:
         pad_top = (input_height - resized_height) // 2
         padded = np.full((input_height, input_width, 3), 114, dtype=np.uint8)
         padded[pad_top:pad_top + resized_height, pad_left:pad_left + resized_width] = resized
-        tensor = padded[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+        tensor = cv2.dnn.blobFromImage(
+            padded,
+            scalefactor=1.0 / 255.0,
+            size=(input_width, input_height),
+            swapRB=True,
+            crop=False,
+            ddepth=cv2.CV_32F,
+        )
 
         output = self.session.run(None, {self.input_name: tensor})[0]
         predictions = np.asarray(output)
@@ -369,6 +381,48 @@ def save_supabase(image_bytes, class_name, confidence, telegram_sent):
         return False, object_path, str(error)
 
 
+def set_alert_status(event_id, state, message):
+    with alert_status_lock:
+        if state == "queued" or latest_alert_status["event_id"] == event_id:
+            latest_alert_status.update({"state": state, "message": message})
+            latest_alert_status["event_id"] = event_id
+        return latest_alert_status.copy()
+
+
+def get_alert_status():
+    with alert_status_lock:
+        return latest_alert_status.copy()
+
+
+def deliver_alert(event_id, image_bytes, caption, class_name, confidence):
+    set_alert_status(event_id, "sending", "Đang gửi cảnh báo Telegram và lưu ảnh lên Supabase…")
+    try:
+        telegram_sent, telegram_message = send_telegram(image_bytes, caption)
+        stored, image_path, database_message = save_supabase(
+            image_bytes, class_name, confidence, telegram_sent
+        )
+    except Exception as error:
+        set_alert_status(event_id, "failed", "Gửi cảnh báo hoặc lưu ảnh gặp lỗi.")
+        print("[EVENT] Lỗi xử lý cảnh báo nền:", error)
+        return
+    action_message = (
+        f"Cảnh báo: Telegram {'đã gửi' if telegram_sent else 'chưa gửi'}; "
+        f"Supabase {'đã lưu' if stored else 'chưa lưu'}"
+    )
+    state = "done" if telegram_sent and stored else "partial"
+    set_alert_status(event_id, state, action_message)
+    print(
+        "[EVENT]",
+        action_message,
+        "Telegram:",
+        telegram_message,
+        "Supabase:",
+        database_message,
+        "Image:",
+        image_path,
+    )
+
+
 def draw_detections(frame, detections):
     annotated = frame.copy()
     for detection in detections:
@@ -445,15 +499,19 @@ def detect():
                     f"Class: {alert['class_name']}\nĐộ tin cậy: {alert['confidence'] * 100:.1f}%\n"
                     f"Thời gian: {datetime.now().astimezone().strftime('%d/%m/%Y %H:%M:%S')}"
                 )
-                telegram_sent, telegram_message = send_telegram(image_bytes, caption)
-                stored, image_path, database_message = save_supabase(
-                    image_bytes, alert["class_name"], alert["confidence"], telegram_sent
+                event_id = uuid.uuid4().hex
+                action_message = "Đã phát hiện cảnh báo; đang gửi Telegram và lưu ảnh nền."
+                telegram_sent = None
+                stored = None
+                set_alert_status(event_id, "queued", action_message)
+                alert_executor.submit(
+                    deliver_alert,
+                    event_id,
+                    image_bytes,
+                    caption,
+                    alert["class_name"],
+                    alert["confidence"],
                 )
-                action_message = (
-                    f"Cảnh báo: Telegram {'đã gửi' if telegram_sent else 'chưa gửi'}; "
-                    f"Supabase {'đã lưu' if stored else 'chưa lưu'}"
-                )
-                print("[EVENT]", action_message, "Telegram:", telegram_message, "Supabase:", database_message)
             else:
                 action_message = "Đang trong thời gian chờ trước khi gửi cảnh báo tiếp theo"
 
@@ -466,6 +524,7 @@ def detect():
             "supabase_saved": stored,
             "image_path": image_path,
             "message": action_message,
+            "alert_status": get_alert_status(),
         })
     except Exception as error:
         print("[DETECT] Lỗi:", error)
