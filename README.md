@@ -56,6 +56,8 @@ Bảng `public.detection_events` cần các cột `device_id` (text), `class_nam
 
 - Trình duyệt gửi JPEG tối đa 640 px; mỗi frame cách nhau 350 ms sau khi request trước hoàn tất, không gửi chồng request.
 - Inference giữ input ONNX 320 px; Telegram và Supabase chạy nền để không chặn response nhận diện.
+- Giao diện đo ba độ trễ: `Suy luận cloud` là thời gian tiền xử lý + ONNX + hậu xử lý trong `predict()` trên Render; `Local ↔ Cloud` là thời gian từ lúc gửi request đến khi nhận và phân tích xong JSON; `Chụp frame → bbox` là thời gian trên trình duyệt từ lúc bắt đầu lấy frame đến khi vẽ bbox. Mỗi số lớn là lần gần nhất; dòng nhỏ là trung bình trượt tối đa 20 frame thành công.
+- API trả `server_ms` để đo thời gian xử lý trong route trên server, gồm đọc/giải mã ảnh, suy luận và chuẩn bị cảnh báo; không gồm truyền request/response. Giá trị này phục vụ phân tích server, còn `inference_ms` chỉ đo pipeline nhận diện.
 - Server tải model ONNX từ Supabase theo từng lần khởi động và chỉ giữ một ONNX Runtime session trong RAM.
 - Chỉ class `Khong deo` và `Deo sai cach` tạo event Telegram/Supabase; các class khác vẫn hiện trên giao diện.
 - Render Free dùng filesystem tạm thời; file tải về chỉ là cache và model sẽ được tải lại sau khi service khởi động lại.

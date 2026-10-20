@@ -85,10 +85,12 @@
       .btn-icon { margin-right: 6px; font-size: 15px; }
       select { min-width: 160px; flex: 1; cursor: pointer; }
       .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0 23px; }
+      .metric:last-child { grid-column: 1 / -1; }
       .metric { padding: 14px; border: 1px solid rgba(148, 163, 184, .1); border-radius: 13px; background: rgba(7, 12, 22, .55); }
       .metric-label { display: block; color: var(--muted); font-size: 11px; }
       .metric strong { display: block; margin-top: 4px; font-size: 21px; line-height: 1.2; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
       .metric small { margin-left: 3px; color: #8997ad; font-size: 11px; font-weight: 500; }
+      .metric-average { display: block; margin-top: 6px; color: #8290a7; font-size: 10px; font-variant-numeric: tabular-nums; }
       .detected-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
       .result-summary { color: var(--muted); font-size: 11px; }
       .detections { display: flex; flex-direction: column; gap: 8px; min-height: 72px; }
@@ -164,8 +166,21 @@
             <span class="count-pill"><strong id="count">0</strong> đối tượng</span>
           </div>
           <div class="metrics">
-            <div class="metric"><span class="metric-label">Thời gian AI</span><strong><span id="infer">—</span><small>ms</small></strong></div>
-            <div class="metric"><span class="metric-label">Phản hồi</span><strong><span id="rtt">—</span><small>ms</small></strong></div>
+            <div class="metric" title="Thời gian tiền xử lý, chạy ONNX và hậu xử lý trên Render">
+              <span class="metric-label">Suy luận cloud</span>
+              <strong><span id="infer">—</span><small>ms</small></strong>
+              <span class="metric-average" id="inferAvg">TB —</span>
+            </div>
+            <div class="metric" title="Từ lúc gửi ảnh đến khi nhận và phân tích xong phản hồi JSON">
+              <span class="metric-label">Local ↔ Cloud</span>
+              <strong><span id="rtt">—</span><small>ms</small></strong>
+              <span class="metric-average" id="rttAvg">TB —</span>
+            </div>
+            <div class="metric" title="Từ lúc chụp frame trên trình duyệt đến khi vẽ bbox">
+              <span class="metric-label">Chụp frame → bbox</span>
+              <strong><span id="e2e">—</span><small>ms</small></strong>
+              <span class="metric-average" id="e2eAvg">TB —</span>
+            </div>
           </div>
           <div class="detected-head"><h3>Đối tượng</h3><span class="result-summary" id="resultSummary">—</span></div>
           <div id="detections" class="detections"><div class="empty">Chưa phát hiện đối tượng</div></div>
@@ -188,6 +203,8 @@
       const action = document.getElementById('action');
       const FRAME_GAP_MS = 350;
       const MAX_FRAME_WIDTH = 640;
+      const METRIC_WINDOW_SIZE = 20;
+      const metricSamples = { infer: [], rtt: [], e2e: [] };
       let stream = null;
       let running = false;
       let starting = false;
@@ -210,6 +227,16 @@
         state.className = 'status' + (mode ? ' is-' + mode : '');
         state.lastElementChild.textContent = message;
         state.title = detail || message;
+      }
+
+      function updateMetric(name, value) {
+        const samples = metricSamples[name];
+        samples.push(value);
+        if (samples.length > METRIC_WINDOW_SIZE) samples.shift();
+        const average = samples.reduce(function (sum, sample) { return sum + sample; }, 0) / samples.length;
+        document.getElementById(name).textContent = Math.round(value);
+        document.getElementById(name + 'Avg').textContent =
+          'TB ' + samples.length + ' frame: ' + Math.round(average) + ' ms';
       }
 
       async function refreshHealth() {
@@ -314,6 +341,7 @@
           scheduleCapture(Math.min(wait, 15000));
           return;
         }
+        const frameStartedAt = performance.now();
         busy = true;
         const token = runToken;
         try {
@@ -328,9 +356,8 @@
           if (!blob) throw new Error('Không tạo được ảnh webcam');
           const form = new FormData();
           form.append('frame', blob, 'webcam.jpg');
-          const startTime = performance.now();
+          const requestStartedAt = performance.now();
           const response = await fetch('/api/detect', { method: 'POST', body: form, cache: 'no-store' });
-          const rtt = performance.now() - startTime;
           const body = await response.text();
           let data;
           try {
@@ -338,6 +365,7 @@
           } catch (error) {
             throw new Error('Phản hồi máy chủ không hợp lệ');
           }
+          const rtt = performance.now() - requestStartedAt;
           if (!data) throw new Error('Máy chủ không trả dữ liệu');
           if (token !== runToken) return;
           if (response.status === 429) {
@@ -353,8 +381,9 @@
           if (!response.ok) throw new Error(data.error || 'Lỗi máy chủ');
           const detections = data.detections || [];
           drawDetections(detections, canvas.width, canvas.height);
-          document.getElementById('infer').textContent = data.inference_ms === undefined ? '—' : data.inference_ms;
-          document.getElementById('rtt').textContent = Math.round(rtt);
+          if (data.inference_ms !== undefined) updateMetric('infer', Number(data.inference_ms));
+          updateMetric('rtt', rtt);
+          updateMetric('e2e', performance.now() - frameStartedAt);
           document.getElementById('count').textContent = detections.length;
           document.getElementById('resultSummary').textContent = detections.length ? 'Đang nhận diện' : 'Không phát hiện';
           renderDetections(detections);

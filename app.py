@@ -455,6 +455,7 @@ def health():
 @app.post("/api/detect")
 def detect():
     global last_alert_at
+    server_start = time.perf_counter()
     active_model = model
     active_model_error = model_error
     if active_model is None:
@@ -468,10 +469,10 @@ def detect():
     if frame is None:
         return jsonify({"error": "Không đọc được ảnh webcam"}), 400
 
-    start = time.perf_counter()
     try:
+        inference_start = time.perf_counter()
         detections = active_model.predict(frame, CONF)
-        inference_ms = (time.perf_counter() - start) * 1000
+        inference_ms = (time.perf_counter() - inference_start) * 1000
         alert = next((item for item in detections if norm(item["class_name"]) in ALERT_CLASSES), None)
         telegram_sent = False
         stored = False
@@ -514,7 +515,7 @@ def detect():
         return jsonify({
             "detections": detections,
             "inference_ms": round(inference_ms, 1),
-            "server_ms": round((time.perf_counter() - start) * 1000, 1),
+            "server_ms": round((time.perf_counter() - server_start) * 1000, 1),
             "alert": alert,
             "telegram_sent": telegram_sent,
             "supabase_saved": stored,
