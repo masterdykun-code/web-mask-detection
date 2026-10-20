@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>YOLO Webcam · Telegram · Supabase</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #0b1220;
+        color: #e5edf8;
+        font:
+          15px system-ui,
+          Arial;
+      }
+      .wrap {
+        max-width: 1180px;
+        margin: auto;
+        padding: 22px;
+      }
+      .top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      h1 {
+        font-size: clamp(23px, 4vw, 34px);
+        margin: 0;
+      }
+      .muted {
+        color: #94a3b8;
+      }
+      .status {
+        padding: 8px 12px;
+        border-radius: 20px;
+        background: #1e293b;
+        font-size: 13px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr);
+        gap: 18px;
+        margin-top: 20px;
+      }
+      .panel {
+        background: #111c2e;
+        border: 1px solid #26364d;
+        border-radius: 18px;
+        padding: 16px;
+        min-width: 0;
+      }
+      .videoBox {
+        background: #050a12;
+        border-radius: 12px;
+        overflow: hidden;
+        min-height: 220px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .videoStage {
+        position: relative;
+        width: 100%;
+        line-height: 0;
+      }
+      .videoStage video,
+      .videoStage canvas {
+        display: block;
+        width: 100%;
+        max-height: 68vh;
+        object-fit: contain;
+      }
+      .videoStage canvas {
+        position: absolute;
+        inset: 0;
+        height: 100%;
+        pointer-events: none;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button,
+      select {
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 10px 13px;
+        background: #1e293b;
+        color: #f8fafc;
+        font-weight: 600;
+      }
+      button.primary {
+        background: #2563eb;
+        border-color: #2563eb;
+      }
+      button:disabled {
+        opacity: 0.45;
+      }
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin: 12px 0;
+      }
+      .metric {
+        background: #0b1220;
+        padding: 13px;
+        border-radius: 12px;
+      }
+      .metric strong {
+        display: block;
+        font-size: 21px;
+        margin-top: 5px;
+      }
+      .list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .item {
+        padding: 11px;
+        background: #0b1220;
+        border-radius: 10px;
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .note {
+        font-size: 13px;
+        line-height: 1.6;
+        color: #94a3b8;
+        margin-top: 12px;
+      }
+      .health {
+        margin-top: 14px;
+        padding: 12px;
+        border-radius: 12px;
+        background: #0b1220;
+        white-space: pre-line;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      @media (max-width: 800px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .wrap {
+          padding: 13px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <div class="top">
+        <div>
+          <h1>Nhận diện webcam bằng YOLO</h1>
+          <div class="muted">
+            best.pt · Telegram · Supabase Storage/Database
+          </div>
+        </div>
+        <span class="status" id="state">Đang kiểm tra dịch vụ…</span>
+      </div>
+      <div class="grid">
+        <section class="panel">
+          <h2>Webcam trực tiếp</h2>
+          <div class="videoBox">
+            <div class="videoStage">
+              <video id="video" autoplay playsinline muted></video>
+              <canvas id="overlay" aria-hidden="true"></canvas>
+            </div>
+            <span id="placeholder" class="muted"
+              >Bấm “Bật webcam” để bắt đầu</span
+            >
+          </div>
+          <div class="controls">
+            <button class="primary" id="startBtn">Bật webcam</button
+            ><button id="stopBtn" disabled>Dừng</button
+            ><select id="cameraSelect" aria-label="Chọn camera">
+              <option value="">Camera mặc định</option></select
+            ><button id="switchBtn">Đổi camera</button>
+          </div>
+          <div class="note">
+            Trình duyệt gửi ảnh định kỳ lên máy chủ để chạy model. Cần mở trang
+            bằng HTTPS (Render tự cung cấp) hoặc localhost để dùng webcam.
+          </div>
+        </section>
+        <aside class="panel">
+          <h2>Kết quả nhận diện</h2>
+          <div class="metrics">
+            <div class="metric">
+              <span class="muted">Thời gian AI</span
+              ><strong id="infer">— ms</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Độ trễ gửi/nhận</span
+              ><strong id="rtt">— ms</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Số đối tượng</span
+              ><strong id="count">0</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Khung hình xử lý</span
+              ><strong id="fps">—</strong>
+            </div>
+          </div>
+          <h3>Danh sách đối tượng</h3>
+          <div id="detections" class="list">
+            <div class="muted">Chưa có kết quả.</div>
+          </div>
+          <div id="action" class="health">
+            Telegram: đang kiểm tra… Supabase: đang kiểm tra…
+          </div>
+          <div id="health" class="health">Đang kiểm tra model…</div>
+        </aside>
+      </div>
+    </main>
+    <script>
+      const video=document.getElementById('video'), overlay=document.getElementById('overlay'), placeholder=document.getElementById('placeholder');
+      const startBtn=document.getElementById('startBtn'), stopBtn=document.getElementById('stopBtn'), cameraSelect=document.getElementById('cameraSelect');
+      const CAPTURE_INTERVAL_MS=1200;
+      let stream=null, running=false, starting=false, busy=false, timer=null, lastStart=0, detectionPausedUntil=0;
+      async function health(){try{const r=await fetch('/api/health');const d=await r.json();document.getElementById('state').textContent=d.model_loaded?'Model đã sẵn sàng':'Model chưa sẵn sàng';document.getElementById('health').textContent=`Model: ${d.model_loaded?'OK':'LỖI'}${d.model_error?'\n'+d.model_error:''}\nTelegram: ${d.telegram_configured?'đã cấu hình':'chưa cấu hình'}\nSupabase: ${d.supabase_ready?'đã kết nối':'chưa kết nối'}${d.supabase_error?'\n'+d.supabase_error:''}`;if(!running)document.getElementById('action').textContent=`Telegram: ${d.telegram_configured?'đã cấu hình':'chưa cấu hình'}\nSupabase: ${d.supabase_ready?'đã kết nối':'chưa kết nối'}`;}catch(e){document.getElementById('health').textContent='Không kiểm tra được server: '+e.message}}
+      async function listCameras(){try{const devices=await navigator.mediaDevices.enumerateDevices();const cams=devices.filter(x=>x.kind==='videoinput');const current=cameraSelect.value;cameraSelect.innerHTML='<option value="">Camera mặc định</option>';cams.forEach((c,i)=>{const o=document.createElement('option');o.value=c.deviceId;o.textContent=c.label||`Camera ${i+1}`;cameraSelect.appendChild(o)});if(current)cameraSelect.value=current;}catch(e){}}
+      function resizeOverlay(){if(!video.videoWidth||!video.videoHeight)return;overlay.width=video.videoWidth;overlay.height=video.videoHeight;}
+      function drawDetections(detections, sourceWidth, sourceHeight){resizeOverlay();const context=overlay.getContext('2d');context.clearRect(0,0,overlay.width,overlay.height);const scaleX=overlay.width/sourceWidth;const scaleY=overlay.height/sourceHeight;context.font='bold 16px system-ui';context.lineWidth=3;detections.forEach(d=>{if(!Array.isArray(d.bbox)||d.bbox.length!==4)return;const [x1,y1,x2,y2]=d.bbox.map((value,index)=>value*(index%2?scaleY:scaleX));const color=d.class_name.toLowerCase().includes('khong')||d.class_name.toLowerCase().includes('sai')?'#fb7185':'#4ade80';context.strokeStyle=color;context.fillStyle=color;context.strokeRect(x1,y1,x2-x1,y2-y1);const label=`${d.class_name} ${(d.confidence*100).toFixed(1)}%`;const textWidth=context.measureText(label).width;const labelY=Math.max(22,y1);context.fillRect(x1,labelY-22,textWidth+10,22);context.fillStyle='#07111f';context.fillText(label,x1+5,labelY-6);});}
+      function scheduleCapture(){if(!running)return;if(!busy&&Date.now()>=detectionPausedUntil)captureAndDetect();timer=setTimeout(scheduleCapture,CAPTURE_INTERVAL_MS);}
+      async function start(){if(running||starting)return;starting=true;try{await stop(false);startBtn.disabled=true;document.getElementById('action').textContent='Đang chờ quyền camera…';const constraints={audio:false,video:cameraSelect.value?{deviceId:{exact:cameraSelect.value},width:{ideal:1280},height:{ideal:720}}:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}};stream=await navigator.mediaDevices.getUserMedia(constraints);video.srcObject=stream;video.style.display='block';placeholder.style.display='none';document.getElementById('action').textContent='Đang khởi tạo video…';await new Promise(resolve=>{if(video.readyState>=1)resolve();else video.addEventListener('loadedmetadata',resolve,{once:true});});await video.play();if(!video.videoWidth||!video.videoHeight)throw new Error('Webcam chưa cung cấp được kích thước video');running=true;stopBtn.disabled=false;document.getElementById('action').textContent='Đang gửi frame lên server…';await listCameras();scheduleCapture();}catch(e){document.getElementById('action').textContent='Chưa mở được webcam: '+e.message;}finally{starting=false;if(!running)startBtn.disabled=false;}}
+      function stop(update=true){running=false;if(timer)clearTimeout(timer);timer=null;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;overlay.getContext('2d').clearRect(0,0,overlay.width,overlay.height);startBtn.disabled=false;stopBtn.disabled=true;if(update){video.style.display='none';placeholder.style.display='block';placeholder.textContent='Đã dừng webcam';}}
+      async function captureAndDetect(){if(!running||busy||Date.now()<detectionPausedUntil||video.readyState<2)return;busy=true;const canvas=document.createElement('canvas');const maxW=960;const scale=Math.min(1,maxW/video.videoWidth);canvas.width=Math.round(video.videoWidth*scale);canvas.height=Math.round(video.videoHeight*scale);canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.78));if(!blob){busy=false;return;}const form=new FormData();form.append('frame',blob,'webcam.jpg');const t0=performance.now();try{const response=await fetch('/api/detect',{method:'POST',body:form});const rtt=performance.now()-t0;const body=await response.text();let d;try{d=body?JSON.parse(body):null;}catch(parseError){throw new Error(`Server trả response không hợp lệ (${response.status})`);}if(!d)throw new Error(`Server không trả dữ liệu (${response.status})`);if(response.status===429){detectionPausedUntil=Date.now()+15000;document.getElementById('state').textContent='Server đang giới hạn request';document.getElementById('action').textContent='Tạm dừng gửi frame 15 giây để tránh quá tải…';return;}if(response.status===503){detectionPausedUntil=Date.now()+10000;document.getElementById('state').textContent='Model server chưa sẵn sàng';throw new Error(d.error||'Model server chưa sẵn sàng');}if(!response.ok){detectionPausedUntil=Date.now()+5000;throw new Error(d.error||'Server lỗi');}drawDetections(d.detections,canvas.width,canvas.height);document.getElementById('infer').textContent=d.inference_ms+' ms';document.getElementById('rtt').textContent=Math.round(rtt)+' ms';document.getElementById('count').textContent=d.detections.length;const now=performance.now();if(lastStart)document.getElementById('fps').textContent=(1000/(now-lastStart)).toFixed(1)+' /s';lastStart=now;const list=document.getElementById('detections');list.innerHTML='';if(!d.detections.length){list.innerHTML='<div class="muted">Không phát hiện đối tượng.</div>';}d.detections.forEach(x=>{const row=document.createElement('div');row.className='item';const name=document.createElement('span');name.textContent=x.class_name;const conf=document.createElement('strong');conf.textContent=(x.confidence*100).toFixed(1)+'%';row.append(name,conf);list.appendChild(row)});if(d.message)document.getElementById('action').textContent=d.message;else if(d.alert)document.getElementById('action').textContent='Đã phát hiện cảnh báo; đang xử lý thông báo và lưu trữ.';}catch(e){document.getElementById('state').textContent='Lỗi nhận diện';document.getElementById('action').textContent=e.message;}finally{busy=false;}}
+      video.addEventListener('loadedmetadata',resizeOverlay);window.addEventListener('resize',resizeOverlay);startBtn.addEventListener('click',start);stopBtn.addEventListener('click',()=>stop());document.getElementById('switchBtn').addEventListener('click',async()=>{if(!running){await listCameras();cameraSelect.selectedIndex=(cameraSelect.selectedIndex+1)%cameraSelect.options.length;return;}const devices=Array.from(cameraSelect.options);cameraSelect.selectedIndex=(cameraSelect.selectedIndex+1)%devices.length;await start();});navigator.mediaDevices?.addEventListener?.('devicechange',listCameras);health();listCameras();setInterval(health,15000);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+.env
+*.pyc
+best.pt
+uploaded_models/
+runtime_models/
